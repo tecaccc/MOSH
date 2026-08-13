@@ -24,3 +24,5 @@ target
 /build/
 /node_modules/
 /src-tauri/target/
+/.svelte-kit/
+/dist/
