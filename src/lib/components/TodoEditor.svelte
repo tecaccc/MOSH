@@ -10,6 +10,7 @@
     createTodo,
     updateRecord,
   } from "../store.svelte";
+  import { fromLocalInput, toLocalInput } from "../datetime";
   import type { Priority, Record as RecordT, Status } from "../types";
 
   const { record }: { record: RecordT | null } = $props();
@@ -47,25 +48,6 @@
     }
     error = null;
   });
-
-  /** ISO8601 → datetime-local 控件所需的 `YYYY-MM-DDTHH:mm`。 */
-  function toLocalInput(iso: string | null | undefined): string {
-    if (!iso) return "";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "";
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-      d.getHours(),
-    )}:${pad(d.getMinutes())}`;
-  }
-
-  /** `datetime-local` 值 → ISO8601（UTC）。空串 → null。 */
-  function fromLocalInput(value: string): string | null {
-    if (!value) return null;
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return null;
-    return d.toISOString();
-  }
 
   /** 解析逗号分隔标签。 */
   function parseTags(text: string): string[] {

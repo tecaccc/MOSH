@@ -10,11 +10,14 @@
   import TasksView from "$lib/components/TasksView.svelte";
   import TodayView from "$lib/components/TodayView.svelte";
   import TodoEditor from "$lib/components/TodoEditor.svelte";
+  import CalendarPane from "$lib/components/calendar/CalendarPane.svelte";
+  import EventEditor from "$lib/components/calendar/EventEditor.svelte";
   import {
     currentView,
     loadTodos,
     selectedRecord,
   } from "$lib/store.svelte";
+  import { editingEvent } from "$lib/calendar.svelte";
 
   let loadError = $state<string | null>(null);
 
@@ -27,8 +30,14 @@
     }
   });
 
-  // 编辑器是否可见（关闭/未选择新建时隐藏右栏）。
-  const editorOpen = $derived(selectedRecord() !== undefined);
+  // 右栏编辑器：日历视图挂 EventEditor（editingEvent 非 undefined），否则 TodoEditor。
+  const calEditing = $derived(
+    currentView() === "calendar" && editingEvent() !== undefined,
+  );
+  const todoEditing = $derived(
+    currentView() !== "calendar" && selectedRecord() !== undefined,
+  );
+  const editorOpen = $derived(calEditing || todoEditing);
 </script>
 
 <main class="app" data-view={currentView()}>
@@ -47,12 +56,18 @@
       <TodayView />
     {:else if currentView() === "tasks"}
       <TasksView />
+    {:else if currentView() === "calendar"}
+      <CalendarPane />
     {/if}
   </section>
 
   {#if editorOpen}
     <aside class="editor-pane">
-      <TodoEditor record={selectedRecord() ?? null} />
+      {#if calEditing}
+        <EventEditor event={editingEvent() ?? null} />
+      {:else}
+        <TodoEditor record={selectedRecord() ?? null} />
+      {/if}
     </aside>
   {/if}
 </main>

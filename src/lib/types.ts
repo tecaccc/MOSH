@@ -21,6 +21,8 @@ export type Priority = "none" | "low" | "medium" | "high";
 export interface RecordData {
   priority?: Priority;
   location?: string;
+  /** 全天事件标记（event 专属；缺省 false）。 */
+  all_day?: boolean;
   attendees?: string[];
   [key: string]: unknown;
 }
@@ -60,6 +62,23 @@ export interface TodoInput {
 }
 
 /**
+ * 创建 event 的输入。`start_at`/`end_at` 必填：
+ *  - 定时：ISO8601（`...T09:00:00Z`）；后端校验 `end > start`。
+ *  - 全天（`all_day`）：date-only `YYYY-MM-DD`；后端校验 `end >= start`（end 含当天）。
+ */
+export interface EventInput {
+  title: string;
+  description?: string | null;
+  start_at: string;
+  end_at: string;
+  location?: string | null;
+  /** 缺省 false。true 时 start_at/end_at 视为 date-only。 */
+  all_day?: boolean;
+  /** 缺省 []。 */
+  tags?: string[];
+}
+
+/**
  * 部分更新。只放要改的字段；省略=不改。
  *
  * 嵌套字段（description/start_at/end_at/location）为"双层 Option"：
@@ -78,6 +97,8 @@ export interface RecordPatch {
   end_at?: string | null;
   priority?: Priority;
   location?: string | null;
+  /** 全天标记（event 专属）。后端为 `Option<bool>`（非双层）。 */
+  all_day?: boolean;
   tags?: string[];
 }
 

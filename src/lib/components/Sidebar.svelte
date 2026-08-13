@@ -1,11 +1,11 @@
 <script lang="ts">
   /**
-   * 左侧导航：Today / Tasks 切换，Calendar 占位禁用（子任务 B 解锁）。
+   * 左侧导航：今日 / 任务 / 日历 切换。
    * 直接读写 store，无 props。
    */
-  import { currentView, setView, startCreate } from "../store.svelte";
+  import { currentView, setView, startCreate, type View } from "../store.svelte";
 
-  function nav(view: "today" | "tasks"): void {
+  function nav(view: View): void {
     setView(view);
   }
 </script>
@@ -30,7 +30,12 @@
     >
       任务
     </button>
-    <button type="button" class="nav-item" disabled title="即将推出（子任务 B）">
+    <button
+      type="button"
+      class="nav-item"
+      class:active={currentView() === "calendar"}
+      onclick={() => nav("calendar")}
+    >
       日历
     </button>
   </nav>

@@ -10,6 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  EventInput,
   Record as RecordT,
   RecordFilter,
   RecordPatch,
@@ -33,6 +34,19 @@ export async function listRecords(filter?: RecordFilter | null): Promise<RecordT
 /** 创建待办。 */
 export async function createTodo(input: TodoInput): Promise<RecordT> {
   return invoke<RecordT>("create_todo", { input });
+}
+
+/** 创建日程事件（定时或全天）。 */
+export async function createEvent(input: EventInput): Promise<RecordT> {
+  return invoke<RecordT>("create_event", { input });
+}
+
+/**
+ * 列出与 [from, to] 区间重叠的事件（from 含、to 排他）。
+ * `from`/`to` 为 date-only `YYYY-MM-DD`（from=窗口首日、to=末日+1）。
+ */
+export async function listEvents(from: string, to: string): Promise<RecordT[]> {
+  return invoke<RecordT[]>("list_events", { from, to });
 }
 
 /**

@@ -30,7 +30,7 @@ import type {
 } from "./types";
 
 /** 视图枚举。 */
-export type View = "today" | "tasks";
+export type View = "today" | "tasks" | "calendar";
 
 /** 当前加载到内存的全部（未软删）todo。 */
 export const records = $state<RecordT[]>([]);
