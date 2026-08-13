@@ -1,0 +1,19 @@
+[package]
+name = "mosh-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "MOSH shared core: domain model, SQLite storage, services."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite_migration = "1"

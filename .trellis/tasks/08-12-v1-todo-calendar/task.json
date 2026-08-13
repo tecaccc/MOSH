@@ -1,0 +1,29 @@
+{
+  "id": "v1-todo-calendar",
+  "name": "v1-todo-calendar",
+  "title": "v1: 待办与日程",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "connor",
+  "assignee": "connor",
+  "createdAt": "2026-08-12",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-12-todo",
+    "08-12-calendar"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

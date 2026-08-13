@@ -1,0 +1,107 @@
+{
+  "env": {
+    "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(python3 ./.trellis/scripts/task.py list)",
+      "Bash(python3 ./.trellis/scripts/task.py --help)",
+      "Bash(python3 ./.trellis/scripts/task.py create \"v1: 待办与日程\" --slug v1-todo-calendar)",
+      "Bash(python3 ./.trellis/scripts/task.py create \"Todo 待办（含共享地基）\" --slug todo --parent .trellis/tasks/08-12-v1-todo-calendar)",
+      "Bash(python3 ./.trellis/scripts/task.py create \"Calendar 日程\" --slug calendar --parent .trellis/tasks/08-12-v1-todo-calendar)",
+      "Bash(find /data/workspace/MOSH/docs -maxdepth 2 -name '*.png' -newermt '-5 minutes' 2>/dev/null; ls -lat /tmp 2>/dev/null | head; echo \"---try pencil exports dir---\"; find / -maxdepth 4 -name '*.png' -newermt '-5 minutes' 2>/dev/null | grep -iv node_modules | head)",
+      "Read(//tmp/**)",
+      "Bash(file *.png)",
+      "Bash(python3 -c ' *)",
+      "Bash(rm -rf /tmp/mosh-verify)",
+      "Bash(mkdir -p /tmp/mosh-verify)",
+      "Bash(python3 ./.trellis/scripts/task.py current)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(npm --version)",
+      "Bash(pnpm --version)",
+      "Bash(bun --version)",
+      "Bash(npx -y create-tauri-app@latest --help)",
+      "Bash(rm -rf mosh-scaffold)",
+      "Bash(npx -y create-tauri-app@latest mosh-scaffold -m npm -t svelte-ts --tauri-version 2 --identifier com.mosh.app -y)",
+      "Bash(cd /data/workspace/MOSH *)",
+      "Bash(sed -i 's/mosh-scaffold/mosh/g; s/mosh_scaffold_lib/mosh_lib/g' package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json)",
+      "Bash(sed -i 's/\"width\": 800/\"width\": 1440/; s/\"height\": 600/\"height\": 960/' src-tauri/tauri.conf.json)",
+      "Bash(cargo build *)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'scaffold: Tauri 2 + SvelteKit \\(SPA\\) + Cargo workspace with mosh-core *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/session-start.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/session-start.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/session-start.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/inject-subagent-context.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/inject-subagent-context.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/inject-workflow-state.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python3 .claude/hooks/statusline.py"
+  },
+  "enabledPlugins": {}
+}
