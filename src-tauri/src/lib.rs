@@ -5,7 +5,7 @@
 //! 把 `CoreError` 转成前端可读字符串。`State<SqliteStorage>` 在 `setup`
 //! 中由 `app_data_dir/mosh.sqlite` 打开并注入。
 
-use mosh_core::model::{Record, RecordFilter, RecordPatch, Status, TodoInput};
+use mosh_core::model::{EventInput, Record, RecordFilter, RecordPatch, Status, TodoInput};
 use mosh_core::service;
 use mosh_core::storage::SqliteStorage;
 use tauri::{Manager, State};
@@ -31,6 +31,22 @@ fn list_records(
 #[tauri::command]
 fn create_todo(input: TodoInput, state: State<'_, SqliteStorage>) -> Result<Record, String> {
     service::create_todo(&state, input).map_err(|e| e.to_string())
+}
+
+/// 创建日程事件（定时或全天）。
+#[tauri::command]
+fn create_event(input: EventInput, state: State<'_, SqliteStorage>) -> Result<Record, String> {
+    service::create_event(&state, input).map_err(|e| e.to_string())
+}
+
+/// 列出与 [from, to] 区间重叠的事件（from 含、to 排他）。供日历视图按可视窗口加载。
+#[tauri::command]
+fn list_events(
+    from: String,
+    to: String,
+    state: State<'_, SqliteStorage>,
+) -> Result<Vec<Record>, String> {
+    service::list_events(&state, &from, &to).map_err(|e| e.to_string())
 }
 
 /// 为顶层待办添加子任务（service 内含 1 层嵌套校验）。
@@ -88,6 +104,8 @@ pub fn run() {
             get_record,
             list_records,
             create_todo,
+            create_event,
+            list_events,
             add_subtask,
             update_record,
             set_todo_status,

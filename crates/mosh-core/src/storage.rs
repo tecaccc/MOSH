@@ -167,6 +167,27 @@ impl SqliteStorage {
         Ok(out)
     }
 
+    /// 列出与 `[from, to]` 区间重叠的 event（`deleted_at IS NULL`）。
+    /// 重叠语义：`start_at < to`（排他上界）AND `end_at >= from`（含下界）。
+    /// 该比较对全天（date-only `YYYY-MM-DD`）与定时（ISO8601）两种格式同时成立：
+    /// 调用方传 `from` = 窗口首日（含）、`to` = 窗口末日 + 1 天（排他）。
+    pub fn list_events_in_range(&self, from: &str, to: &str) -> Result<Vec<Record>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT * FROM records
+             WHERE kind = 'event' AND deleted_at IS NULL
+               AND start_at IS NOT NULL AND end_at IS NOT NULL
+               AND start_at < ?1 AND end_at >= ?2
+             ORDER BY start_at ASC",
+        )?;
+        let mut rows = stmt.query(params![to, from])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(row_to_record(row)?);
+        }
+        Ok(out)
+    }
+
     /// 软删：置 `deleted_at` + 递增 `revision`。不存在或已删时返回 `NotFound`。
     pub fn soft_delete(&self, id: &str) -> Result<(), CoreError> {
         let conn = self.lock()?;
@@ -301,6 +322,26 @@ mod tests {
         }
     }
 
+    fn sample_event(id: &str, title: &str, start: &str, end: &str) -> Record {
+        Record {
+            id: id.to_string(),
+            kind: Kind::Event,
+            title: title.to_string(),
+            description: None,
+            status: Status::Active,
+            start_at: Some(start.to_string()),
+            end_at: Some(end.to_string()),
+            parent_id: None,
+            source: "local".to_string(),
+            tags: vec![],
+            data: serde_json::json!({}),
+            created_at: "2026-08-13T09:00:00Z".to_string(),
+            updated_at: "2026-08-13T09:00:00Z".to_string(),
+            deleted_at: None,
+            revision: 1,
+        }
+    }
+
     #[test]
     fn insert_get_roundtrip() {
         let db = SqliteStorage::open_in_memory().unwrap();
@@ -341,6 +382,80 @@ mod tests {
             .unwrap();
         assert_eq!(range.len(), 1);
         assert_eq!(range[0].id, "t1");
+    }
+
+    #[test]
+    fn list_events_in_range_overlap_semantics() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        // 窗口 = 2026-08：from="2026-08-01"（含），to="2026-09-01"（排他）。
+        // e1 定时窗口内
+        db.insert(&sample_event(
+            "e1",
+            "定时内",
+            "2026-08-15T09:00:00Z",
+            "2026-08-15T10:00:00Z",
+        ))
+        .unwrap();
+        // e2 全天单日
+        db.insert(&sample_event("e2", "全天单日", "2026-08-20", "2026-08-20"))
+            .unwrap();
+        // e3 全天跨多日，横跨窗口边界（7/30–8/2）
+        db.insert(&sample_event("e3", "全天跨月", "2026-07-30", "2026-08-02"))
+            .unwrap();
+        // e4 定时事件落在窗口末日深夜
+        db.insert(&sample_event(
+            "e4",
+            "末日深夜",
+            "2026-08-31T22:00:00Z",
+            "2026-08-31T23:00:00Z",
+        ))
+        .unwrap();
+        // e5 完全在窗口之后（9 月）
+        db.insert(&sample_event(
+            "e5",
+            "窗外后",
+            "2026-09-05T09:00:00Z",
+            "2026-09-05T10:00:00Z",
+        ))
+        .unwrap();
+        // e6 完全在窗口之前（7 月）
+        db.insert(&sample_event(
+            "e6",
+            "窗外前",
+            "2026-07-10T09:00:00Z",
+            "2026-07-10T10:00:00Z",
+        ))
+        .unwrap();
+
+        let list = db.list_events_in_range("2026-08-01", "2026-09-01").unwrap();
+        let ids: Vec<&str> = list.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"e1"), "定时窗口内应返回");
+        assert!(ids.contains(&"e2"), "全天单日应返回");
+        assert!(ids.contains(&"e3"), "全天跨月应返回");
+        assert!(ids.contains(&"e4"), "窗口末日深夜定时事件应返回");
+        assert!(!ids.contains(&"e5"), "窗外后不应返回");
+        assert!(!ids.contains(&"e6"), "窗外前不应返回");
+        assert_eq!(ids.len(), 4);
+    }
+
+    #[test]
+    fn list_events_in_range_excludes_deleted_and_todos() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.insert(&sample_event(
+            "e1",
+            "事件",
+            "2026-08-15T09:00:00Z",
+            "2026-08-15T10:00:00Z",
+        ))
+        .unwrap();
+        // todo 的 end_at 落在区间，但 kind!=event，不应返回。
+        db.insert(&sample_todo("t1", "待办在区间", Some("2026-08-15T12:00:00Z")))
+            .unwrap();
+        db.soft_delete("e1").unwrap();
+
+        let list = db.list_events_in_range("2026-08-01", "2026-09-01").unwrap();
+        // 软删的 event 不返回；todo 即便 end_at 在区间也不返回。
+        assert!(list.is_empty());
     }
 
     #[test]

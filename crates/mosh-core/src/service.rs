@@ -2,8 +2,8 @@
 
 use crate::error::CoreError;
 use crate::model::{
-    now_iso, new_id, set_location, set_priority, Kind, Record, RecordFilter, RecordPatch, Status,
-    TodoInput,
+    now_iso, new_id, set_all_day, set_location, set_priority, EventInput, Kind, Record,
+    RecordFilter, RecordPatch, Status, TodoInput,
 };
 use crate::storage::SqliteStorage;
 
@@ -45,6 +45,75 @@ pub fn create_todo(db: &SqliteStorage, input: TodoInput) -> Result<Record, CoreE
 pub fn list_todos(db: &SqliteStorage, mut filter: RecordFilter) -> Result<Vec<Record>, CoreError> {
     filter.kind = Some(Kind::Todo);
     db.list(&filter)
+}
+
+/// 由输入构造一条 `kind = event` 的 `Record`（不落库）。
+///
+/// - 全天（`all_day`）：`start_at`/`end_at` 为 date-only，校验 `end >= start`。
+/// - 定时：`start_at`/`end_at` 为 ISO8601，校验 `end > start`。
+fn build_event(input: EventInput) -> Result<Record, CoreError> {
+    if input.title.trim().is_empty() {
+        return Err(CoreError::Validation("title is required".to_string()));
+    }
+    if input.all_day {
+        if input.end_at < input.start_at {
+            return Err(CoreError::Validation(
+                "end_at must not precede start_at".to_string(),
+            ));
+        }
+    } else {
+        let start = parse_instant(&input.start_at)?;
+        let end = parse_instant(&input.end_at)?;
+        if end <= start {
+            return Err(CoreError::Validation(
+                "end_at must be after start_at".to_string(),
+            ));
+        }
+    }
+    let now = now_iso();
+    let mut data = serde_json::json!({});
+    if let Some(loc) = input.location.as_deref() {
+        set_location(&mut data, Some(loc));
+    }
+    if input.all_day {
+        set_all_day(&mut data, true);
+    }
+    Ok(Record {
+        id: new_id(),
+        kind: Kind::Event,
+        title: input.title,
+        description: input.description,
+        status: Status::Active,
+        start_at: Some(input.start_at),
+        end_at: Some(input.end_at),
+        parent_id: None,
+        source: "local".to_string(),
+        tags: input.tags,
+        data,
+        created_at: now.clone(),
+        updated_at: now,
+        deleted_at: None,
+        revision: 1,
+    })
+}
+
+/// 解析 ISO8601 时刻（拒绝 date-only 等无时间的形式）。
+fn parse_instant(s: &str) -> Result<chrono::DateTime<chrono::Utc>, CoreError> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|_| CoreError::Validation(format!("invalid ISO8601 datetime: {s}")))
+}
+
+/// 创建日程事件。
+pub fn create_event(db: &SqliteStorage, input: EventInput) -> Result<Record, CoreError> {
+    let record = build_event(input)?;
+    db.insert(&record)?;
+    Ok(record)
+}
+
+/// 列出与 `[from, to]` 区间重叠的事件（`from` 含、`to` 排他；转 storage 区间查询）。
+pub fn list_events(db: &SqliteStorage, from: &str, to: &str) -> Result<Vec<Record>, CoreError> {
+    db.list_events_in_range(from, to)
 }
 
 /// 部分更新记录：合并 patch、刷新 `updated_at`/`revision` 后落库。
@@ -133,12 +202,15 @@ fn apply_patch(record: &mut Record, patch: RecordPatch) {
     if let Some(location) = patch.location {
         set_location(&mut record.data, location.as_deref());
     }
+    if let Some(all_day) = patch.all_day {
+        set_all_day(&mut record.data, all_day);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Priority, RecordFilter, Status, TodoInput};
+    use crate::model::{EventInput, Priority, RecordFilter, Status, TodoInput};
 
     fn input(title: &str) -> TodoInput {
         TodoInput {
@@ -146,6 +218,18 @@ mod tests {
             description: None,
             due_at: None,
             priority: Priority::None,
+            tags: vec![],
+        }
+    }
+
+    fn event_input(title: &str, start: &str, end: &str) -> EventInput {
+        EventInput {
+            title: title.to_string(),
+            description: None,
+            start_at: start.to_string(),
+            end_at: end.to_string(),
+            location: None,
+            all_day: false,
             tags: vec![],
         }
     }
@@ -357,5 +441,113 @@ mod tests {
             update_record(&db, "ghost", RecordPatch::default()),
             Err(CoreError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn create_event_timed_and_all_day() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let timed = create_event(
+            &db,
+            event_input("会议", "2026-08-15T09:00:00Z", "2026-08-15T10:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(timed.kind, Kind::Event);
+        assert_eq!(timed.start_at.as_deref(), Some("2026-08-15T09:00:00Z"));
+        assert!(!crate::model::is_all_day(&timed));
+
+        let mut allday = event_input("休假", "2026-08-20", "2026-08-22");
+        allday.all_day = true;
+        allday.location = Some("杭州".to_string());
+        let rec = create_event(&db, allday).unwrap();
+        assert!(crate::model::is_all_day(&rec));
+        assert_eq!(crate::model::location_of(&rec).as_deref(), Some("杭州"));
+    }
+
+    #[test]
+    fn create_event_rejects_empty_title_and_bad_range() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        assert!(matches!(
+            create_event(
+                &db,
+                event_input("  ", "2026-08-15T09:00:00Z", "2026-08-15T10:00:00Z")
+            ),
+            Err(CoreError::Validation(_))
+        ));
+        // 定时 end < start
+        assert!(matches!(
+            create_event(
+                &db,
+                event_input("x", "2026-08-15T10:00:00Z", "2026-08-15T09:00:00Z")
+            ),
+            Err(CoreError::Validation(_))
+        ));
+        // 定时 start == end（须严格之后）
+        assert!(matches!(
+            create_event(
+                &db,
+                event_input("x", "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z")
+            ),
+            Err(CoreError::Validation(_))
+        ));
+        // 定时 date-only（缺时间）无法解析
+        assert!(matches!(
+            create_event(&db, event_input("x", "2026-08-15", "2026-08-16")),
+            Err(CoreError::Validation(_))
+        ));
+        // 全天 end < start
+        let mut bad = event_input("x", "2026-08-20", "2026-08-19");
+        bad.all_day = true;
+        assert!(matches!(
+            create_event(&db, bad),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn list_events_uses_overlap_range() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        create_event(
+            &db,
+            event_input("A", "2026-08-15T09:00:00Z", "2026-08-15T10:00:00Z"),
+        )
+        .unwrap();
+        create_event(
+            &db,
+            event_input("B", "2026-09-05T09:00:00Z", "2026-09-05T10:00:00Z"),
+        )
+        .unwrap();
+        let aug = list_events(&db, "2026-08-01", "2026-09-01").unwrap();
+        assert_eq!(aug.len(), 1);
+        assert_eq!(aug[0].title, "A");
+    }
+
+    #[test]
+    fn update_event_all_day_toggle() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let rec = create_event(
+            &db,
+            event_input("会议", "2026-08-15T09:00:00Z", "2026-08-15T10:00:00Z"),
+        )
+        .unwrap();
+        let updated = update_record(
+            &db,
+            &rec.id,
+            RecordPatch {
+                all_day: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(crate::model::is_all_day(&updated));
+        let updated = update_record(
+            &db,
+            &rec.id,
+            RecordPatch {
+                all_day: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!crate::model::is_all_day(&updated));
     }
 }

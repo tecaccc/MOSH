@@ -98,6 +98,9 @@ pub struct EventInput {
     pub end_at: String,
     #[serde(default)]
     pub location: Option<String>,
+    /// 全天事件：true 时 start_at/end_at 为 date-only（YYYY-MM-DD）。
+    #[serde(default)]
+    pub all_day: bool,
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -120,6 +123,8 @@ pub struct RecordPatch {
     pub priority: Option<Priority>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all_day: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
 }
@@ -201,6 +206,29 @@ pub fn set_location(data: &mut serde_json::Value, location: Option<&str>) {
     }
 }
 
+/// 从 `data` JSON 读 all_day（event 专属；缺省 false）。
+pub fn is_all_day(record: &Record) -> bool {
+    record
+        .data
+        .get("all_day")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// 写入（true）或移除（false）`data.all_day`。false 时删键，使缺省语义一致。
+pub fn set_all_day(data: &mut serde_json::Value, all_day: bool) {
+    if data.is_null() {
+        *data = serde_json::Value::Object(BTreeMap::new().into_iter().collect());
+    }
+    if let Some(obj) = data.as_object_mut() {
+        if all_day {
+            obj.insert("all_day".to_string(), serde_json::Value::Bool(true));
+        } else {
+            obj.remove("all_day");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +296,14 @@ mod tests {
         assert_eq!(data["location"], "会议室 A");
         set_location(&mut data, None);
         assert!(data.get("location").is_none());
+    }
+
+    #[test]
+    fn all_day_set_and_clear_in_data() {
+        let mut data = serde_json::json!({});
+        set_all_day(&mut data, true);
+        assert_eq!(data["all_day"], true);
+        set_all_day(&mut data, false);
+        assert!(data.get("all_day").is_none());
     }
 }
