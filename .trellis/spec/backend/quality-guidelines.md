@@ -27,6 +27,17 @@ cargo clippy -p mosh-core --all-targets -- -D warnings
 
 These must pass for any `mosh-core` change and need **no** system GUI library.
 
+### Full-workspace Rust gate on this box (cross target)
+
+Native full-workspace `cargo clippy --all-targets` is glib-blocked (see below), so to lint/compile the **`src-tauri` command layer too**, run the gate against the Windows cross target — it skips GTK entirely:
+
+```bash
+cargo check  --target x86_64-pc-windows-gnu -p mosh        # compiles src-tauri + mosh-core
+cargo clippy --target x86_64-pc-windows-gnu --all-targets -- -D warnings
+```
+
+Target `x86_64-pc-windows-gnu` and MinGW (`x86_64-w64-mingw32-gcc`) are already installed. This does not produce a runnable artifact — it verifies the Rust side compiles/lints clean. Verified 2026-08-13.
+
 ### `cargo tauri build` / `cargo tauri dev` (full app)
 
 Building/running the Tauri app pulls in `tao` / `wry` / GTK, which on Linux requires **system `glib-2.0` ≥ 2.70**. This dev box has 2.68.4, so native `cargo tauri build` / `dev` and full-workspace `cargo clippy --all-targets` fail at the GTK dependency. This is an **environment limitation, not a code defect** — `mosh-core` compiles and tests cleanly on its own.
