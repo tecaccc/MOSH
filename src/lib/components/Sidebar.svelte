@@ -17,7 +17,7 @@
     <button
       type="button"
       class="nav-item"
-      class:active={currentView === "today"}
+      class:active={currentView() === "today"}
       onclick={() => nav("today")}
     >
       今日
@@ -25,7 +25,7 @@
     <button
       type="button"
       class="nav-item"
-      class:active={currentView === "tasks"}
+      class:active={currentView() === "tasks"}
       onclick={() => nav("tasks")}
     >
       任务

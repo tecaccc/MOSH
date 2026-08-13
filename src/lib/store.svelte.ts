@@ -1,10 +1,13 @@
 /**
  * 全局 reactive 状态（Svelte 5 runes 模块级 `$state`）。
  *
- * `.svelte.ts` 模块内的 `$state` 是 reactive 的。注意 Svelte 5 的限制：
- * 模块 `$state` 原语绑定对外部模块而言是只读的（编译为 const），
- * 因此原始状态（records/currentView/selectedId）的写入必须通过本模块
- * 导出的 mutator 函数进行；对象/数组状态则可直接 mutate（splice/push）。
+ * `.svelte.ts` 模块内的 `$state` 是 reactive 的。注意 Svelte 5 的硬限制：
+ * 既不可「导出被重新赋值的 `$state`」（state_invalid_export），也不可
+ * 「导出 `$derived`」（derived_invalid_export）。因此可重赋值原语
+ * （_currentView / selectedId）及所有派生值都保持模块私有，外部读访问
+ * 一律通过**导出函数**（currentView / topLevelTodos / selectedRecord / …）：
+ * 函数体在调用方的响应式上下文里读取 `$state`，从而维持响应式；
+ * 只做 mutate 不重赋值的 `records` 可直接导出 const。
  *
  * v1 策略：所有变更命令在调用 ipc 成功后整表 `loadTodos()` 刷新，
  * 简单可靠，不做乐观更新。
@@ -32,22 +35,27 @@ export type View = "today" | "tasks";
 /** 当前加载到内存的全部（未软删）todo。 */
 export const records = $state<RecordT[]>([]);
 
-/** 当前激活的视图。 */
-export const currentView = $state<View>("today");
+/** 当前激活的视图（私有可重赋值状态）。 */
+let _currentView = $state<View>("today");
+
+/** 只读响应式访问：当前激活的视图（组件在响应式上下文里调用读取）。 */
+export function currentView(): View {
+  return _currentView;
+}
 
 /**
  * 当前编辑的 todo id；`null` 表示新建模式；`undefined` 表示编辑器关闭。
  * 用 `string | null | undefined` 区分"新建"与"关闭"两种空态。
  */
-export const selectedId = $state<string | null | undefined>(undefined);
+let selectedId = $state<string | null | undefined>(undefined);
 
-/** 派生：顶层 todo（parent_id==null）。 */
-export const topLevelTodos = $derived(
-  records.filter((r) => r.parent_id === null),
-);
+/** 顶层 todo（parent_id==null）；响应式（读取 records $state）。 */
+export function topLevelTodos(): RecordT[] {
+  return records.filter((r) => r.parent_id === null);
+}
 
-/** 派生：子任务映射，按 parent_id 分组。 */
-export const subtasksByParent = $derived.by(() => {
+/** 派生：子任务映射，按 parent_id 分组（私有：派生值不可导出）。 */
+const subtasksByParent = $derived.by(() => {
   const map = new Map<string, RecordT[]>();
   for (const r of records) {
     if (r.parent_id !== null) {
@@ -72,16 +80,16 @@ export function recordById(id: string): RecordT | undefined {
   return records.find((r) => r.id === id);
 }
 
-/** 派生：当前编辑器绑定的 record（selectedId 对应；新建为 null；关闭为 undefined）。 */
-export const selectedRecord = $derived.by<RecordT | null | undefined>(() => {
+/** 当前编辑器绑定的 record（selectedId 对应；新建为 null；关闭为 undefined）。 */
+export function selectedRecord(): RecordT | null | undefined {
   if (selectedId === undefined) return undefined;
   if (selectedId === null) return null;
   return recordById(selectedId);
-});
+}
 
 /** 切换当前视图。 */
 export function setView(view: View): void {
-  currentView = view;
+  _currentView = view;
 }
 
 /**

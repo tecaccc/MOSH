@@ -28,10 +28,10 @@
   });
 
   // 编辑器是否可见（关闭/未选择新建时隐藏右栏）。
-  const editorOpen = $derived(selectedRecord !== undefined);
+  const editorOpen = $derived(selectedRecord() !== undefined);
 </script>
 
-<main class="app" data-view={currentView}>
+<main class="app" data-view={currentView()}>
   <Sidebar />
 
   <section class="main-view">
@@ -43,16 +43,16 @@
       </div>
     {/if}
 
-    {#if currentView === "today"}
+    {#if currentView() === "today"}
       <TodayView />
-    {:else if currentView === "tasks"}
+    {:else if currentView() === "tasks"}
       <TasksView />
     {/if}
   </section>
 
   {#if editorOpen}
     <aside class="editor-pane">
-      <TodoEditor record={selectedRecord ?? null} />
+      <TodoEditor record={selectedRecord() ?? null} />
     </aside>
   {/if}
 </main>

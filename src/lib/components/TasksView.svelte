@@ -22,17 +22,17 @@
 
   /** 排序后的顶层 todo（截止升序 → 优先级降序 → 标题）。 */
   const sorted = $derived(
-    [...topLevelTodos].sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
+    [...topLevelTodos()].sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
   );
 </script>
 
 <section class="view">
   <header class="view-header">
     <h1>任务</h1>
-    <span class="count">{topLevelTodos.length} 项</span>
+    <span class="count">{topLevelTodos().length} 项</span>
   </header>
 
-  {#if topLevelTodos.length === 0}
+  {#if topLevelTodos().length === 0}
     <div class="empty">
       <p>还没有任务。</p>
       <p class="hint">点击侧栏「+ 新建待办」开始。</p>

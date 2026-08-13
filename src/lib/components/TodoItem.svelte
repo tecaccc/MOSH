@@ -5,6 +5,7 @@
    *
    * 子任务复用本组件递归渲染（但子任务不能再挂子任务——UI 上不渲染"添加子任务"按钮）。
    */
+  import TodoItem from "./TodoItem.svelte";
   import {
     addSubtask,
     deleteRecord,
@@ -158,7 +159,7 @@
     <ul class="subtasks">
       {#each children as child (child.id)}
         <li>
-          <svelte:self record={child} />
+          <TodoItem record={child} />
         </li>
       {/each}
     </ul>
