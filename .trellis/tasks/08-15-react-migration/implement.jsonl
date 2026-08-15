@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "迁移后质量门仍以 build 为权威"}
+{"file": ".trellis/tasks/08-15-react-migration/design.md", "reason": "目录映射与关键决策"}

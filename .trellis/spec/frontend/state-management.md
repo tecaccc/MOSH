@@ -1,69 +1,103 @@
 # State Management
 
-> How state is managed in this project (Svelte 5 runes).
+> How state is managed in this project (React 19 + zustand).
 
 ---
 
 ## Overview
 
-The frontend uses **Svelte 5 runes** (`$state`, `$derived`, `$props`, `$effect`) exclusively — no Svelte 4 stores. Global reactive state lives in `src/lib/store.svelte.ts` (a `.svelte.ts` module so runes are active). Components read it via exported functions and mutate it via exported mutator functions.
+The frontend is **React 19 + zustand** (migrated from Svelte 5 runes on 2026-08-15,
+task `08-15-react-migration`; see `.trellis/tasks/archive/` for the migration PRD).
+Global state lives in `src/state/*.ts`, one zustand store per domain:
 
-### Two hard Svelte 5 limits on module-level runes (CRITICAL)
+| Store | File | Domain |
+|---|---|---|
+| `useAppStore` | `src/state/store.ts` | todos (records), current view, editor selection |
+| `useCalendarStore` | `src/state/calendar.ts` | events, mode/cursor window, event editor |
+| `useWeatherStore` | `src/state/weather.ts` | weather status machine |
+| `useAgentStore` | `src/state/agent.ts` | chat messages/sessions + Tauri event stream |
+| `useReminderStore` | `src/state/reminder.ts` | due reminders |
 
-Runes work in `.svelte.ts` / `.svelte.js` modules, but the Svelte compiler **forbids** two export shapes. Violating them makes `npm run build` fail — and `npm run check` (type-level) does **not** catch them:
-
-1. **`state_invalid_export`** — you may NOT export a `$state` variable that is ever reassigned.
-   > "Cannot export state from a module if it is reassigned."
-2. **`derived_invalid_export`** — you may NOT export a `$derived` / `$derived.by` at all.
-   > "Cannot export derived state from a module."
-
-The compiler-prescribed remedy for both: **export a function returning the value.**
+Framework-agnostic libs (IPC wrappers, calendar math, datetime, lunar, cities,
+weather-code) stay in `src/lib/` and must not import from `src/state/` or React.
 
 ---
 
-## State Categories
+## Patterns
 
-- **Private mutable primitives** (`let x = $state(...)`) — reassignable and reactive, but MUST stay module-private (never exported). e.g. `_currentView`, `selectedId` in `store.svelte.ts`.
-- **Exported collection `$state`** — allowed ONLY when mutated in place (`.splice`, `.push`, index assignment), never reassigned. e.g. `export const records = $state<RecordT[]>([])`, mutated via `records.splice(0, records.length, ...list)`.
-- **Reactive reads exposed as functions** — any value a component must read reactively is exposed as a function whose body reads a `$state`, e.g. `export function currentView(): View { return _currentView; }`. Called inside a component's reactive context (template or `$derived`), it stays reactive.
-- **Derived values** — computed inside exported functions or component-local `$derived`; never exported as a module-level `$derived`.
-
-### Canonical pattern (`src/lib/store.svelte.ts`)
+### Store shape: state + actions co-located
 
 ```ts
-// Private reassignable primitive — NOT exported.
-let _currentView = $state<View>("today");
-
-// Reactive read exposed as a function.
-export function currentView(): View {
-  return _currentView;
+interface AppState {
+  records: RecordT[];
+  selectedId: string | null | undefined; // null=create, undefined=closed
+  setView(v: View): void;
+  loadTodos(): Promise<void>;
+  // ...
 }
 
-// Mutator reassigns the private state.
-export function setView(view: View): void {
-  _currentView = view;
-}
-
-// Exported $state that is only mutated (never reassigned) is allowed.
-export const records = $state<RecordT[]>([]);
-
-// Derived over records, exposed as a function (NOT an exported $derived).
-export function topLevelTodos(): RecordT[] {
-  return records.filter((r) => r.parent_id === null);
-}
+export const useAppStore = create<AppState>()((set, get) => ({
+  records: [],
+  selectedId: undefined,
+  setView: (view) => set({ currentView: view }),
+  loadTodos: async () => set({ records: await listRecords({ kind: "todo" }) }),
+  createTodo: async (input) => {
+    const rec = await ipcCreateTodo(input);
+    await useAppStore.getState().loadTodos(); // refresh whole list (v1: no optimistic UI)
+    set({ selectedId: rec.id });
+    return rec;
+  },
+}));
 ```
 
----
+### Components subscribe via selectors
 
-## Server State
+```tsx
+const records = useAppStore((s) => s.records);
+const setView = useAppStore((s) => s.setView); // actions are stable references
+```
 
-No optimistic UI. Every mutator calls the Tauri IPC command, then calls `loadTodos()`, which re-fetches the full list and splices it into `records`. The source of truth stays in SQLite; the UI stays trivially consistent. (Subtask B / Calendar may generalize `loadTodos` to an unfiltered `listRecords`.)
+- Select the smallest slice needed; avoid `useAppStore()` (subscribes to everything).
+- Actions from `create()` are referentially stable — safe as useEffect deps.
+
+### Derived data: pure functions + useMemo
+
+Derived values are plain exported functions over the records array, computed in
+the component with `useMemo` (replaces Svelte `$derived`):
+
+```ts
+// state/store.ts
+export function subtasksOf(records: RecordT[], parentId: string): RecordT[] { ... }
+
+// component
+const subs = useMemo(() => subtasksOf(records, id), [records, id]);
+```
+
+### Server state
+
+No optimistic UI. Every mutator calls the Tauri IPC command, then re-fetches the
+full list (`loadTodos()` / `loadRange()`). SQLite stays the source of truth.
+
+### Tauri event streams (agent://*)
+
+`listen()` registrations live inside the store's `init()` action with a module-level
+`listenersBound` guard; the component calls `void init()` once in `useEffect`. Cross-
+turn bookkeeping (activeTurnSession / streamingKey) stays module-private.
 
 ---
 
 ## Common Mistakes
 
-- ❌ `export const currentView = $state("today")` then `currentView = "tasks"` elsewhere → `state_invalid_export` at build time.
-- ❌ `export const topLevelTodos = $derived(records.filter(...))` → `derived_invalid_export` at build time.
-- ❌ Treating `npm run check` passing as "the frontend builds" — it does not. Always run `npm run build`. See [Quality Guidelines](./quality-guidelines.md).
-- ⚠️ An `$effect` that syncs a prop into local `$state` (e.g. `TodoEditor`) re-runs whenever the source object identity changes. A background `loadTodos()` refresh replaces record objects and can reset in-progress form edits. Acceptable for v1; revisit if editing during a background refresh matters.
+- ❌ Mutating store state directly (`store.records.push()`) — zustand state is
+  immutable; always `set()` a new array/object.
+- ❌ Reading state outside React via `useAppStore()` without a selector — causes
+  re-render storms. Use a selector, or `useAppStore.getState()` in event handlers
+  (non-reactive read).
+- ❌ Forgetting that a `useEffect` depending on a fresh arrow function re-fires
+  every render — depend on stable store actions or primitives instead.
+- ⚠️ Form editors (TodoEditor/EventEditor) sync from record identity via
+  `useEffect([record])`; a background `loadTodos()` replaces record objects and
+  resets in-progress edits (parity with the old Svelte behavior — revisit if
+  editing during background refresh matters).
+- ⚠️ `npm run check` is `tsc --noEmit` (type-level). `npm run build` (vite) is
+  the authoritative gate — keep both green.

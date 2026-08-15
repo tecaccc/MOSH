@@ -60,29 +60,27 @@ Questions to answer:
 
 ---
 
-## `{@html}` Content and Svelte Scoped Styles (added 08-15-chat-markdown)
+## Injected HTML Content and Scoped Styles (React / streamdown, updated 08-15-react-migration)
 
-DOM injected via `{@html}` **does not receive** the component's scoped style
-hash. Styles for injected content must use `:global()` under a scoped wrapper
-class:
+DOM injected by React (`dangerouslySetInnerHTML`) or by `streamdown` **does not
+receive** CSS Module class hashing. Styles for injected content go in a global
+stylesheet (`src/styles/markdown-chat.css`) scoped by a wrapper selector:
 
-```svelte
-<div class="md">{@html html}</div>
-
-<style>
-  .md :global(p) { margin: 0.5em 0; }   /* ✅ scoped wrapper + global target */
-  .md p { color: red; }                 /* ❌ never matches injected <p> */
-</style>
+```css
+/* markdown-chat.css — wrapper-scoped global rules */
+.bubble.bot pre { background: var(--surface-2); }  /* ✅ matches injected nodes */
+.bubble.pre { ... }                                 /* ❌ module class never on injected DOM */
 ```
 
 ## Markdown Rendering (chat assistant bubbles)
 
-- `src/lib/components/Markdown.svelte` is the **single entry point** for
-  markdown rendering (props: `text`, `streaming`). All `{@html}` markdown
-  output goes through `src/lib/markdown.ts`, which **must** run DOMPurify —
-  model output is untrusted content; raw `{@html}` of model text is forbidden.
-- Streaming: append a plain-text cursor char (`▍`) before parsing so the cursor
-  lands correctly inside any block (including code fences); unclosed ``` fences
-  are temporarily closed for parsing only (never written back to message state).
-- To swap the rendering library later (e.g. markstream-svelte), only
-  `Markdown.svelte` + `markdown.ts` change — call sites stay stable.
+- Rendering is `streamdown` (`<Streamdown>`, React binding; used by cherry-studio)
+  inside `ChatPanel.tsx`, with `streamdown/styles.css` imported once.
+- `parseIncompleteMarkdown` is set while the message is streaming — streamdown
+  internally repairs half-typed markdown (remend) and sanitizes (rehype-sanitize
+  + harden). Do **not** pass model output through raw `dangerouslySetInnerHTML`.
+- Bubble-local theming lives in `src/styles/markdown-chat.css` (global file;
+  injected DOM gets no CSS Module classes) and uses the CSS variables from
+  `src/styles/global.css` for light/dark support.
+- To swap the renderer later, keep the change inside `ChatPanel.tsx` — call
+  sites stay stable.

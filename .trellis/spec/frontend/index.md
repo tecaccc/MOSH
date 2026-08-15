@@ -1,6 +1,6 @@
 # Frontend Development Guidelines
 
-> Best practices for frontend development in this project.
+> Best practices for frontend development in this project (React 19 + Vite + zustand).
 
 ---
 
@@ -15,10 +15,10 @@ This directory contains guidelines for frontend development. Fill in each file w
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |
-| [Component Guidelines](./component-guidelines.md) | Component patterns, props, composition | To fill |
+| [Component Guidelines](./component-guidelines.md) | Component patterns, markdown/injected DOM styling | Filled |
 | [Hook Guidelines](./hook-guidelines.md) | Custom hooks, data fetching patterns | To fill |
-| [State Management](./state-management.md) | Local state, global state, server state | To fill |
-| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
+| [State Management](./state-management.md) | zustand stores, selectors, Tauri events | Filled |
+| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Filled |
 | [Calendar & Datetime](./calendar.md) | Time-value formats, calendar-grid math, range query window | Filled |
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
 
