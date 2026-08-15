@@ -1,0 +1,60 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 248px 1fr;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app:has(.editor-pane) {
+  grid-template-columns: 248px 1fr 340px;
+}
+
+.main-view {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
+.editor-pane {
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.banner {
+  margin: 1rem 1.25rem;
+  padding: 0.75rem 1rem;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.banner .dim {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 900px) {
+  .app,
+  .app:has(.editor-pane) {
+    grid-template-columns: 64px 1fr;
+  }
+
+  .app:has(.editor-pane) {
+    grid-template-rows: 1fr auto;
+  }
+
+  .editor-pane {
+    grid-column: 1 / -1;
+    max-height: 50vh;
+  }
+}

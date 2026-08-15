@@ -1,40 +1,13 @@
+import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import { sveltekit } from "@sveltejs/kit/vite";
-// 浏览器直开（非 Tauri）时设置页「关于」的版本回退：npm 脚本会注入
-// npm_package_version；Tauri 环境以 tauri.conf.json 的 getVersion() 为准。
-// @ts-expect-error process is a nodejs global
-const pkgVersion = process.env.npm_package_version ?? "dev";
+import { version } from "./package.json";
 
-// @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST;
-
-// https://vite.dev/config/
-export default defineConfig(async () => ({
-  plugins: [sveltekit()],
-
-  define: {
-    __APP_VERSION__: JSON.stringify(pkgVersion),
-  },
-
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent Vite from obscuring rust errors
+// Tauri 前端构建：dev 端口 1420 对齐 tauri.conf.json devUrl；
+// build 输出 build/ 对齐 frontendDist（原 SvelteKit adapter-static 同路径）。
+export default defineConfig({
+  plugins: [react()],
+  define: { __APP_VERSION__: JSON.stringify(version) },
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
-  server: {
-    port: 1420,
-    strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
-    watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
-    },
-  },
-}));
+  server: { port: 1420, strictPort: true },
+  build: { outDir: "build", target: "es2022", emptyOutDir: true },
+});

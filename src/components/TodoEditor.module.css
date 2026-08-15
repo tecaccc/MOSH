@@ -1,0 +1,293 @@
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1.25rem;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.icon-btn:hover {
+  background: var(--surface-2);
+}
+
+.error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.label {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+input,
+textarea,
+select {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  font-size: 0.92rem;
+  font-family: inherit;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.actions button {
+  padding: 0.5rem 1.1rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.92rem;
+}
+
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.actions .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* —— 子任务区（设计稿 Detail · Progress）—— */
+.subtasks-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.2rem;
+  border-top: 1px solid var(--border);
+}
+
+.sub-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sub-title {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.sub-count {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.sub-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sub-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.2rem;
+  border-radius: 6px;
+}
+
+.sub-row:hover {
+  background: var(--surface-2);
+}
+
+.sub-row input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.sub-name {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sub-name.done {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
+.sub-row.cancelled .sub-name {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.sub-del {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.sub-del:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.sub-del:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sub-empty {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 0.15rem 0.2rem;
+}
+
+.sub-add {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.sub-add input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+}
+
+.sub-add-btn {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 0.35rem 0.8rem;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.sub-add-btn:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.sub-add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sub-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.sub-note {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  padding-top: 0.2rem;
+  border-top: 1px solid var(--border);
+}
+
+.back-link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.82rem;
+  padding: 0;
+  margin-left: 0.25rem;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}

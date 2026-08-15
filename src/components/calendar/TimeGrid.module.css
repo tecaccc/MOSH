@@ -1,0 +1,156 @@
+.tg {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.head,
+.allday {
+  display: grid;
+  border-bottom: 1px solid var(--border);
+}
+
+.corner {
+  border-right: 1px solid var(--border);
+}
+
+.allday-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+.dayhead {
+  border: none;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.35rem 0;
+  gap: 0.1rem;
+  cursor: pointer;
+}
+
+.dayhead .dow {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.dayhead .dnum {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.dayhead.today .dnum {
+  background: var(--accent);
+  color: #fff;
+  width: 1.6rem;
+  height: 1.6rem;
+  line-height: 1.6rem;
+  border-radius: 50%;
+  text-align: center;
+}
+
+.ad-cell {
+  border-right: 1px solid var(--border);
+  padding: 0.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-height: 1.6rem;
+}
+
+.ad-chip {
+  border: none;
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+  font-size: 0.74rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ad-chip.cancelled {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.timeline {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.axis {
+  display: grid;
+  position: relative;
+}
+
+.gutter {
+  position: relative;
+  border-right: 1px solid var(--border);
+}
+
+.hour-label {
+  position: absolute;
+  right: 0.3rem;
+  transform: translateY(-50%);
+  font-size: 0.68rem;
+  color: var(--text-dim);
+}
+
+.daycol {
+  position: relative;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.hour-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--border);
+  pointer-events: none;
+}
+
+.block {
+  position: absolute;
+  border: none;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 3px;
+  padding: 0.1rem 0.3rem;
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.block.cancelled {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.block-time {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+}
+
+.block-title {
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

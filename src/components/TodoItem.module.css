@@ -1,0 +1,140 @@
+.todo-item {
+  border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0.5rem;
+}
+
+.todo-item.done .title {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+.row-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.prio-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-dim);
+}
+
+.prio-dot.pNone {
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+.prio-dot.pLow {
+  background: #6b7280;
+}
+.prio-dot.pMedium {
+  background: #f59e0b;
+}
+.prio-dot.pHigh {
+  background: #ef4444;
+}
+
+.title-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.title-btn:hover .title {
+  text-decoration: underline;
+}
+
+.title {
+  font-size: 0.95rem;
+}
+
+.due {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.due.overdue {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.tags {
+  display: inline-flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.tag {
+  font-size: 0.72rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.actions {
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0.6;
+}
+
+.todo-item:hover .actions {
+  opacity: 1;
+}
+
+.action {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+}
+
+.action:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.action.danger {
+  color: var(--danger);
+}
+
+.action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 0.8rem;
+  padding: 0.25rem 0 0.25rem 1.8rem;
+}
+
+.subtasks {
+  list-style: none;
+  margin: 0.25rem 0 0.25rem 1.4rem;
+  padding: 0;
+  border-left: 2px solid var(--border);
+}
+
+.subtasks li {
+  padding-left: 0.4rem;
+}

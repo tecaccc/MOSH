@@ -1,0 +1,86 @@
+/* 聊天气泡内 streamdown 注入的 markdown 全局样式
+   （{@html} 等价的注入 DOM 不吃 CSS Modules；接 CSS 变量适配双主题）。 */
+
+.bubble.bot .sd-wrapper,
+.bubble.bot .streamdown {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.bubble.bot p:first-child {
+  margin-top: 0;
+}
+
+.bubble.bot p:last-child {
+  margin-bottom: 0;
+}
+
+.bubble.bot pre {
+  margin: 0.6em 0;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+.bubble.bot pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.88em;
+}
+
+.bubble.bot code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9em;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.bubble.bot table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+  font-size: 0.95em;
+}
+
+.bubble.bot th,
+.bubble.bot td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.bubble.bot th {
+  background: var(--surface-1);
+  font-weight: 600;
+}
+
+.bubble.bot tr:nth-child(2n) td {
+  background: var(--surface-1);
+}
+
+.bubble.bot a {
+  color: var(--accent);
+}
+
+.bubble.bot blockquote {
+  margin: 0.5em 0;
+  padding: 0.1em 0.9em;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+  background: var(--surface-1);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.bubble.bot ul,
+.bubble.bot ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
