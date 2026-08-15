@@ -52,3 +52,24 @@ implement.md 步骤 5–10 的全部前端工作并合入步骤 11 质量门：
 ### Status
 
 [OK] **Completed**
+
+
+## Session 2: React 迁移：Svelte 全量重写为 React19+zustand+streamdown
+
+**Date**: 2026-08-15
+**Task**: React 迁移：Svelte 全量重写为 React19+zustand+streamdown
+**Branch**: `react-migration`
+
+### Summary
+
+基线入库(agent+SSE修复+markdown)后建 react-migration 分支：Vite+React19 脚手架、5 个 zustand store、19 组件 CSS Modules 移植、ChatPanel 接 streamdown、spec 全面 React 化。tsc+build+cargo 60/60 全绿。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c5f1078` | (see git log) |
+
+### Status
+
+[OK] **Completed**
