@@ -25,4 +25,5 @@ target
 /node_modules/
 /src-tauri/target/
 /.svelte-kit/
-/dist/
+/dist//lobehub/
+/cherry-studio/

@@ -31,3 +31,24 @@ implement.md 步骤 5–10 的全部前端工作并合入步骤 11 质量门：
 与 08-12-todo 同样留 in_progress 待运行时验证。
 
 ---
+
+
+## Session 1: Agent v1 实现：聊天面板+工具循环
+
+**Date**: 2026-08-15
+**Task**: Agent v1 实现：聊天面板+工具循环
+**Branch**: `feat/08-12-calendar`
+
+### Summary
+
+完成 08-15-agent-v1 主体：agent_messages 迁移、mosh-core agent 模块（OpenAI 兼容 SSE 客户端/6 工具注册/循环+abort/事件协议）、src-tauri 10 命令、前端 ChatPanel+设置卡片+侧栏入口。55 测试全绿，质量门全过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `wip` | (see git log) |
+
+### Status
+
+[OK] **Completed**
