@@ -30,6 +30,8 @@
   let location = $state("");
   let tagsText = $state("");
   let status = $state<Status>("active");
+  let recurrence = $state<string>("none");
+  let reminderMinutes = $state<number>(0);
   let saving = $state(false);
   let deleting = $state(false);
   let error = $state<string | null>(null);
@@ -43,6 +45,9 @@
       status = event.status;
       location = event.data.location ?? "";
       tagsText = event.tags.join(", ");
+      recurrence = typeof event.data.recurrence === "string" ? event.data.recurrence : "none";
+      reminderMinutes =
+        typeof event.data.reminder_minutes === "number" ? event.data.reminder_minutes : 0;
       if (allDay) {
         startVal = event.start_at ?? cursor();
         endVal = event.end_at ?? startVal;
@@ -58,6 +63,8 @@
       location = "";
       tagsText = "";
       status = "active";
+      recurrence = "none";
+      reminderMinutes = 0;
       startVal = `${c}T09:00`;
       endVal = `${c}T10:00`;
     }
@@ -125,6 +132,8 @@
       all_day: allDay,
       location: location.trim() || null,
       tags: parseTags(tagsText),
+      recurrence,
+      reminder_minutes: reminderMinutes,
     };
   }
 
@@ -150,6 +159,14 @@
     if (tagsDiffer(nextTags, original.tags)) patch.tags = nextTags;
 
     if (!isNew && status !== original.status) patch.status = status;
+
+    const origRecurrence =
+      typeof original.data.recurrence === "string" ? original.data.recurrence : "none";
+    if (recurrence !== origRecurrence) patch.recurrence = recurrence;
+
+    const origReminder =
+      typeof original.data.reminder_minutes === "number" ? original.data.reminder_minutes : 0;
+    if (reminderMinutes !== origReminder) patch.reminder_minutes = reminderMinutes;
 
     return patch;
   }
@@ -245,6 +262,31 @@
     <input bind:value={location} placeholder="会议室 / 地址…" />
   </label>
 
+  <div class="row">
+    <label class="field">
+      <span class="label">重复</span>
+      <select bind:value={recurrence}>
+        <option value="none">不重复</option>
+        <option value="daily">每天</option>
+        <option value="weekly">每周</option>
+        <option value="monthly">每月</option>
+        <option value="yearly">每年</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="label">提醒</span>
+      <select bind:value={reminderMinutes}>
+        <option value={0}>不提醒</option>
+        <option value={5}>提前 5 分钟</option>
+        <option value={10}>提前 10 分钟</option>
+        <option value={15}>提前 15 分钟</option>
+        <option value={30}>提前 30 分钟</option>
+        <option value={60}>提前 1 小时</option>
+        <option value={1440}>提前 1 天</option>
+      </select>
+    </label>
+  </div>
+
   {#if !isNew}
     <label class="field">
       <span class="label">状态</span>
@@ -284,7 +326,9 @@
     flex-direction: column;
     gap: 0.9rem;
     padding: 1.25rem;
-    height: 100%;
+    /* 模态卡片（纵向 flex）内容体：填满卡片、超高自滚动。 */
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
   }
 

@@ -4,13 +4,42 @@ use crate::error::CoreError;
 use crate::model::{Kind, Record, RecordFilter, Status};
 use rusqlite::{params, Connection};
 use rusqlite_migration::{Migrations, M};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+/// Agent 会话消息行（对齐 `agent_messages` 表）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessage {
+    #[serde(default)]
+    pub id: i64,
+    pub session_id: String,
+    /// `user` | `assistant` | `tool`。
+    pub role: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub tool_args: Option<String>,
+    #[serde(default)]
+    pub tool_result: Option<String>,
+    pub created_at: String,
+}
+
+/// 会话摘要（侧栏列表用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionSummary {
+    pub session_id: String,
+    pub title: String,
+    pub message_count: i64,
+}
+
 /// 初始迁移：统一 `records` 表（见 design §3）。
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        r#"
+    Migrations::new(vec![
+        M::up(
+            r#"
         CREATE TABLE records (
           id          TEXT PRIMARY KEY,
           kind        TEXT NOT NULL,
@@ -34,7 +63,24 @@ fn migrations() -> Migrations<'static> {
         CREATE INDEX idx_records_end    ON records(end_at)     WHERE deleted_at IS NULL;
         CREATE INDEX idx_records_start  ON records(start_at)   WHERE deleted_at IS NULL;
         "#,
-    )])
+        ),
+        M::up(r#"CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);"#),
+        M::up(
+            r#"
+        CREATE TABLE agent_messages (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id  TEXT NOT NULL,
+          role        TEXT NOT NULL,
+          content     TEXT NOT NULL DEFAULT '',
+          tool_name   TEXT,
+          tool_args   TEXT,
+          tool_result TEXT,
+          created_at  TEXT NOT NULL
+        );
+        CREATE INDEX idx_agent_messages_session ON agent_messages(session_id);
+        "#,
+        ),
+    ])
 }
 
 /// 线程安全的 SQLite 存储。`Mutex` 包裹 `Connection` 以满足 Tauri `State` 的 `Send + Sync`。
@@ -201,6 +247,106 @@ impl SqliteStorage {
             return Err(CoreError::NotFound(id.to_string()));
         }
         Ok(())
+    }
+
+    /// 读取 kv 配置项；不存在返回 `None`。
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// 写入 kv 配置项（UPSERT：存在则覆盖）。
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), CoreError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    // —— Agent 会话消息（见 agent 模块 design §3）——
+
+    /// 追加一条会话消息（user/assistant/tool）。
+    pub fn append_agent_message(&self, msg: &AgentMessage) -> Result<(), CoreError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO agent_messages
+             (session_id, role, content, tool_name, tool_args, tool_result, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                msg.session_id,
+                msg.role,
+                msg.content,
+                msg.tool_name,
+                msg.tool_args,
+                msg.tool_result,
+                msg.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 按会话取全部消息（id 升序）。
+    pub fn list_agent_messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, created_at
+             FROM agent_messages WHERE session_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(AgentMessage {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                tool_name: row.get(4)?,
+                tool_args: row.get(5)?,
+                tool_result: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
+    /// 会话摘要（最近活跃在前）。标题取首条 user 消息截断。
+    pub fn list_agent_sessions(&self) -> Result<Vec<AgentSessionSummary>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT session_id,
+                    (SELECT content FROM agent_messages m2
+                      WHERE m2.session_id = m.session_id AND m2.role = 'user'
+                      ORDER BY m2.id ASC LIMIT 1) AS first_user,
+                    COUNT(*) AS n,
+                    MAX(id) AS last_id
+             FROM agent_messages m GROUP BY session_id ORDER BY last_id DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let first: Option<String> = row.get(1)?;
+            let n: i64 = row.get(2)?;
+            Ok(AgentSessionSummary {
+                session_id: row.get(0)?,
+                title: first
+                    .map(|s| {
+                        let t = s.trim();
+                        let cut: String = t.chars().take(24).collect();
+                        if t.chars().count() > 24 {
+                            format!("{cut}…")
+                        } else {
+                            cut
+                        }
+                    })
+                    .unwrap_or_else(|| "新会话".to_string()),
+                message_count: n,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 }
 
@@ -449,8 +595,12 @@ mod tests {
         ))
         .unwrap();
         // todo 的 end_at 落在区间，但 kind!=event，不应返回。
-        db.insert(&sample_todo("t1", "待办在区间", Some("2026-08-15T12:00:00Z")))
-            .unwrap();
+        db.insert(&sample_todo(
+            "t1",
+            "待办在区间",
+            Some("2026-08-15T12:00:00Z"),
+        ))
+        .unwrap();
         db.soft_delete("e1").unwrap();
 
         let list = db.list_events_in_range("2026-08-01", "2026-09-01").unwrap();
@@ -480,7 +630,10 @@ mod tests {
     #[test]
     fn soft_delete_missing_errors() {
         let db = SqliteStorage::open_in_memory().unwrap();
-        assert!(matches!(db.soft_delete("nope"), Err(CoreError::NotFound(_))));
+        assert!(matches!(
+            db.soft_delete("nope"),
+            Err(CoreError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -506,6 +659,75 @@ mod tests {
         db.insert(&rec).unwrap();
         let got = db.get("t1").unwrap();
         assert_eq!(crate::model::priority_of(&got), Priority::High);
+    }
+
+    #[test]
+    fn settings_kv_roundtrip_and_overwrite() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        // 默认不存在。
+        assert_eq!(db.get_setting("weather").unwrap(), None);
+        // 写入并读回。
+        db.set_setting("weather", r#"{"query":"Hangzhou"}"#)
+            .unwrap();
+        assert_eq!(
+            db.get_setting("weather").unwrap().as_deref(),
+            Some(r#"{"query":"Hangzhou"}"#)
+        );
+        // 覆盖写入。
+        db.set_setting("weather", r#"{"query":"Beijing"}"#).unwrap();
+        assert_eq!(
+            db.get_setting("weather").unwrap().as_deref(),
+            Some(r#"{"query":"Beijing"}"#)
+        );
+        // 其它 key 互不干扰。
+        db.set_setting("theme", "dark").unwrap();
+        assert_eq!(db.get_setting("theme").unwrap().as_deref(), Some("dark"));
+        assert_eq!(
+            db.get_setting("weather").unwrap().as_deref(),
+            Some(r#"{"query":"Beijing"}"#)
+        );
+    }
+
+    fn agent_msg(session: &str, role: &str, content: &str) -> AgentMessage {
+        AgentMessage {
+            id: 0,
+            session_id: session.to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_name: None,
+            tool_args: None,
+            tool_result: None,
+            created_at: crate::model::now_iso(),
+        }
+    }
+
+    #[test]
+    fn agent_messages_append_list_and_sessions() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.append_agent_message(&agent_msg("s1", "user", "明早十点开周会"))
+            .unwrap();
+        db.append_agent_message(&agent_msg("s1", "assistant", "已创建日程"))
+            .unwrap();
+        db.append_agent_message(&agent_msg(
+            "s2",
+            "user",
+            "另一个会话的第一句话很长很长很长需要被截断处理才行",
+        ))
+        .unwrap();
+
+        // 按会话取出且升序。
+        let msgs = db.list_agent_messages("s1").unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].content, "已创建日程");
+
+        // 摘要：最近活跃在前，标题取首条 user 截断。
+        let sessions = db.list_agent_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].session_id, "s2");
+        assert!(sessions[0].title.ends_with("…"));
+        assert_eq!(sessions[0].message_count, 1);
+        assert_eq!(sessions[1].title, "明早十点开周会");
     }
 
     #[test]

@@ -3,7 +3,7 @@
    * 议程视图：窗口（cursor 起 30 天）内事件按日分组列表。
    * 全天事件归其 start 日（多日全天只显示一次，附 `→ end`）；定时事件按 eventOnDay 归各触及日。
    */
-  import { cursor, events, startEditEvent } from "../../calendar.svelte";
+  import { cursor, renderEvents, startEditEvent } from "../../calendar.svelte";
   import { addDays, eventOnDay, isSameDay, todayOnly, weekdayLabelsMonFirst } from "../../calendar-grid";
   import { formatDate, formatTime } from "../../datetime";
   import type { Record as RecordT } from "../../types";
@@ -24,7 +24,7 @@
   // 仅保留有事件的日子；全天归 start 日，定时按触及日。
   const groups = $derived.by(
     (): DayGroup[] => {
-      const all = events();
+      const all = renderEvents();
       return days
         .map((day) => {
           const starting = all.filter(

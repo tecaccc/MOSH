@@ -15,7 +15,7 @@ export type Status = "active" | "done" | "cancelled";
 export type Priority = "none" | "low" | "medium" | "high";
 
 /**
- * kind 专属扩展字段（JSON）。todo 存 `priority`；event 存 `location`/`attendees`。
+ * kind 专属扩展字段（JSON）。todo 存 `priority`；event 存 `location`/`attendees` 等。
  * 后端为 `serde_json::Value`，前端按宽松对象建模（未知键保留）。
  */
 export interface RecordData {
@@ -24,6 +24,10 @@ export interface RecordData {
   /** 全天事件标记（event 专属；缺省 false）。 */
   all_day?: boolean;
   attendees?: string[];
+  /** 事件周期（event 专属）：none/daily/weekly/monthly/yearly。 */
+  recurrence?: string;
+  /** 提前多少分钟提醒（event 专属；缺省 0 = 不提醒）。 */
+  reminder_minutes?: number;
   [key: string]: unknown;
 }
 
@@ -76,6 +80,10 @@ export interface EventInput {
   all_day?: boolean;
   /** 缺省 []。 */
   tags?: string[];
+  /** 周期：none/daily/weekly/monthly/yearly。 */
+  recurrence?: string;
+  /** 提前多少分钟提醒；0/缺省 = 不提醒。 */
+  reminder_minutes?: number;
 }
 
 /**
@@ -100,6 +108,10 @@ export interface RecordPatch {
   /** 全天标记（event 专属）。后端为 `Option<bool>`（非双层）。 */
   all_day?: boolean;
   tags?: string[];
+  /** 事件周期（缺省不改；"none"=取消重复）。 */
+  recurrence?: string;
+  /** 提前提醒分钟数（缺省不改；0=取消提醒）。 */
+  reminder_minutes?: number;
 }
 
 /** 列表过滤维度。所有字段可选，缺省不过滤。 */
@@ -115,3 +127,63 @@ export interface RecordFilter {
   /** 含已软删（默认 false）。 */
   include_deleted?: boolean;
 }
+
+/**
+ * 当前天气（Open-Meteo `current` 子集）。字段对齐 `mosh_core::weather::CurrentWeather`。
+ * `weather_code` 为原始 WMO 代码，文案/图标映射见 `weather-code.ts`。
+ */
+export interface CurrentWeather {
+  temperature: number;
+  apparent_temperature: number;
+  humidity: number;
+  weather_code: number;
+}
+
+/**
+ * 天气城市配置。`query` 为 geocode 查询串（城市标识，持久化）；
+ * `lat`/`lng`/`tz` 由后端首次解析后复用（缺省 null=尚未 geocode）。
+ */
+export interface WeatherConfig {
+  query: string;
+  lat?: number | null;
+  lng?: number | null;
+  tz?: string | null;
+}
+
+// —— Agent（任务 08-15-agent-v1，镜像 mosh-core::agent）——
+
+/** AI 模型配置（OpenAI 兼容端点；settings key=`ai_model`）。 */
+export interface AiConfig {
+  /** 提供商名称（设置页列表用）。 */
+  name: string;
+  base_url: string;
+  api_key: string;
+  model: string;
+}
+
+/** 会话消息行（对齐 `agent_messages` 表）。 */
+export interface AgentMessage {
+  id: number;
+  session_id: string;
+  /** user | assistant | tool */
+  role: string;
+  content: string;
+  tool_name: string | null;
+  tool_args: string | null;
+  tool_result: string | null;
+  created_at: string;
+}
+
+/** 会话摘要（侧栏列表）。 */
+export interface AgentSessionSummary {
+  session_id: string;
+  title: string;
+  message_count: number;
+}
+
+/** `agent://*` 事件载荷（serde tag="type"；前端按事件名分发，type 字段冗余校验用）。 */
+export type AgentEventPayload =
+  | { type: "start"; session_id: string; turn_id: string }
+  | { type: "delta"; turn_id: string; text: string }
+  | { type: "tool"; turn_id: string; tool: string; args: unknown; ok: boolean; result: unknown }
+  | { type: "end"; turn_id: string; reason: "done" | "aborted" | "error"; error?: string };

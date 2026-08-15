@@ -103,6 +103,12 @@ pub struct EventInput {
     pub all_day: bool,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 周期：none/daily/weekly/monthly/yearly（缺省 none）。
+    #[serde(default)]
+    pub recurrence: Option<String>,
+    /// 提前多少分钟提醒；None/0 = 不提醒。
+    #[serde(default)]
+    pub reminder_minutes: Option<i64>,
 }
 
 /// 部分更新。所有字段为 `Option<T>`；`None` 表示"不改"。
@@ -127,6 +133,12 @@ pub struct RecordPatch {
     pub all_day: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// 事件周期（None=不改；Some("none"/空)=清除；Some(其它)=设置）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurrence: Option<String>,
+    /// 提前提醒分钟数（None=不改；Some(0)=清除；Some(n>0)=设置）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_minutes: Option<i64>,
 }
 
 /// 列表过滤维度。所有字段为 `Option`；`None` 表示不过滤该维度。
@@ -197,7 +209,10 @@ pub fn set_location(data: &mut serde_json::Value, location: Option<&str>) {
     if let Some(obj) = data.as_object_mut() {
         match location {
             Some(s) => {
-                obj.insert("location".to_string(), serde_json::Value::String(s.to_string()));
+                obj.insert(
+                    "location".to_string(),
+                    serde_json::Value::String(s.to_string()),
+                );
             }
             None => {
                 obj.remove("location");
@@ -225,6 +240,62 @@ pub fn set_all_day(data: &mut serde_json::Value, all_day: bool) {
             obj.insert("all_day".to_string(), serde_json::Value::Bool(true));
         } else {
             obj.remove("all_day");
+        }
+    }
+}
+
+/// 从 `data` JSON 读事件周期（event 专属；缺省 "none"）。
+pub fn recurrence_of(record: &Record) -> String {
+    record
+        .data
+        .get("recurrence")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+/// 把周期写入（或清除）`data.recurrence`。`None`/`""`/`"none"` 视为清除（删键）。
+pub fn set_recurrence(data: &mut serde_json::Value, recurrence: Option<&str>) {
+    if data.is_null() {
+        *data = serde_json::Value::Object(BTreeMap::new().into_iter().collect());
+    }
+    if let Some(obj) = data.as_object_mut() {
+        match recurrence {
+            Some(s) if !s.is_empty() && s != "none" => {
+                obj.insert(
+                    "recurrence".to_string(),
+                    serde_json::Value::String(s.to_string()),
+                );
+            }
+            _ => {
+                obj.remove("recurrence");
+            }
+        }
+    }
+}
+
+/// 从 `data` JSON 读提前提醒分钟数（event 专属；缺省 0 = 不提醒）。
+pub fn reminder_minutes_of(record: &Record) -> i64 {
+    record
+        .data
+        .get("reminder_minutes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+}
+
+/// 写入（>0）或移除（<=0）`data.reminder_minutes`。
+pub fn set_reminder_minutes(data: &mut serde_json::Value, minutes: i64) {
+    if data.is_null() {
+        *data = serde_json::Value::Object(BTreeMap::new().into_iter().collect());
+    }
+    if let Some(obj) = data.as_object_mut() {
+        if minutes > 0 {
+            obj.insert(
+                "reminder_minutes".to_string(),
+                serde_json::Value::from(minutes),
+            );
+        } else {
+            obj.remove("reminder_minutes");
         }
     }
 }
@@ -265,10 +336,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&Kind::Todo).unwrap(), "\"todo\"");
         assert_eq!(serde_json::to_string(&Kind::Event).unwrap(), "\"event\"");
         assert_eq!(serde_json::to_string(&Status::Done).unwrap(), "\"done\"");
-        assert_eq!(
-            serde_json::to_string(&Priority::High).unwrap(),
-            "\"high\""
-        );
+        assert_eq!(serde_json::to_string(&Priority::High).unwrap(), "\"high\"");
     }
 
     #[test]

@@ -6,7 +6,7 @@
    * 跨日定时事件截断到当日 [0,24h] 并标 `…`。
    */
   import {
-    events,
+    renderEvents,
     openDay,
     startCreateEvent,
     startEditEvent,
@@ -29,11 +29,11 @@
   const today = todayOnly();
 
   function allDayChips(day: string): RecordT[] {
-    return events().filter((e) => e.data.all_day === true && eventOnDay(e, day));
+    return renderEvents().filter((e) => e.data.all_day === true && eventOnDay(e, day));
   }
 
   function timedBlocks(day: string) {
-    return layoutTimedDay(events(), day);
+    return layoutTimedDay(renderEvents(), day);
   }
 
   function blockStyle(b: {

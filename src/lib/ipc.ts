@@ -10,12 +10,17 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentMessage,
+  AgentSessionSummary,
+  AiConfig,
+  CurrentWeather,
   EventInput,
   Record as RecordT,
   RecordFilter,
   RecordPatch,
   Status,
   TodoInput,
+  WeatherConfig,
 } from "./types";
 
 /** 按 id 读取记录（含已软删）。 */
@@ -70,4 +75,90 @@ export async function setTodoStatus(id: string, status: Status): Promise<RecordT
 /** 软删记录（置墓碑，不出现在默认列表，保留于库）。 */
 export async function deleteRecord(id: string): Promise<void> {
   await invoke<null>("delete_record", { id });
+}
+
+/** 读取天气城市配置；未配置（无设置或 query 空）返回 null。 */
+export async function getWeatherConfig(): Promise<WeatherConfig | null> {
+  return invoke<WeatherConfig | null>("get_weather_config");
+}
+
+/**
+ * 设置当前城市（`query` 为 geocode 查询串）。切换城市会清空已缓存坐标，
+ * 下次取天气对新城市重新 geocode。
+ */
+export async function setCity(query: string): Promise<void> {
+  await invoke<void>("set_city", { query });
+}
+
+/**
+ * 取当前天气。`null` = 未配置城市；非空 = 有数据（新取或同城市缓存回退）；
+ * reject = 配置了但取不到且无可用缓存。
+ */
+export async function getCurrentWeather(): Promise<CurrentWeather | null> {
+  return invoke<CurrentWeather | null>("get_current_weather");
+}
+
+// —— Agent（08-15-agent-v1）——
+
+/** 发送消息并驱动一轮循环；流式事件经 `agent://*` Tauri 事件回传。 */
+export async function agentSend(
+  sessionId: string,
+  message: string,
+  model: string,
+): Promise<void> {
+  await invoke<void>("agent_send", { sessionId, message, model });
+}
+
+/** 中止某会话在迷轮（已落库操作保留）。 */
+export async function agentAbort(sessionId: string): Promise<void> {
+  await invoke<void>("agent_abort", { sessionId });
+}
+
+/** 读 AI 模型配置；未配置返回 null。 */
+export async function getAiConfig(): Promise<AiConfig | null> {
+  return invoke<AiConfig | null>("get_ai_config");
+}
+
+/** 写 AI 模型配置。 */
+export async function setAiConfig(config: AiConfig): Promise<void> {
+  await invoke<void>("set_ai_config", { config });
+}
+
+/** 提供商列表（设置页左侧菜单）。 */
+export async function listAiProviders(): Promise<AiConfig[]> {
+  return invoke<AiConfig[]>("list_ai_providers");
+}
+
+/** 保存单个提供商（按 name upsert）并设为激活。 */
+export async function saveAiProvider(config: AiConfig): Promise<void> {
+  await invoke<void>("save_ai_provider", { config });
+}
+
+/** 删除提供商（按 name）。 */
+export async function deleteAiProvider(name: string): Promise<void> {
+  await invoke<void>("delete_ai_provider", { name });
+}
+
+/** 拉取模型列表（设置页「获取模型列表」）：GET /models。 */
+export async function listAiModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  return invoke<string[]>("list_ai_models", { baseUrl, apiKey });
+}
+
+/** 连通性测试：以指定配置发一条极小请求，返回模型回复片段；失败 reject。 */
+export async function testAiConnection(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+): Promise<string> {
+  return invoke<string>("test_ai_connection", { baseUrl, apiKey, model });
+}
+
+/** 会话摘要列表（最近活跃在前）。 */
+export async function listAgentSessions(): Promise<AgentSessionSummary[]> {
+  return invoke<AgentSessionSummary[]>("list_agent_sessions");
+}
+
+/** 某会话全部消息（历史回看）。 */
+export async function listAgentMessages(sessionId: string): Promise<AgentMessage[]> {
+  return invoke<AgentMessage[]>("list_agent_messages", { sessionId });
 }

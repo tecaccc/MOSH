@@ -2,8 +2,8 @@
 
 use crate::error::CoreError;
 use crate::model::{
-    now_iso, new_id, set_all_day, set_location, set_priority, EventInput, Kind, Record,
-    RecordFilter, RecordPatch, Status, TodoInput,
+    new_id, now_iso, set_all_day, set_location, set_priority, set_recurrence, set_reminder_minutes,
+    EventInput, Kind, Record, RecordFilter, RecordPatch, Status, TodoInput,
 };
 use crate::storage::SqliteStorage;
 
@@ -78,6 +78,12 @@ fn build_event(input: EventInput) -> Result<Record, CoreError> {
     if input.all_day {
         set_all_day(&mut data, true);
     }
+    if let Some(rec) = input.recurrence.as_deref() {
+        set_recurrence(&mut data, Some(rec));
+    }
+    if let Some(minutes) = input.reminder_minutes {
+        set_reminder_minutes(&mut data, minutes);
+    }
     Ok(Record {
         id: new_id(),
         kind: Kind::Event,
@@ -130,6 +136,45 @@ pub fn update_record(
     Ok(record)
 }
 
+/// 部分更新日程事件（仅 `kind = event`），并对合并后的起止时间做范围校验。
+pub fn update_event(db: &SqliteStorage, id: &str, patch: RecordPatch) -> Result<Record, CoreError> {
+    let mut record = db.get(id)?;
+    if record.kind != Kind::Event {
+        return Err(CoreError::Validation(format!("{id} is not an event")));
+    }
+    apply_patch(&mut record, patch);
+    validate_event_range(&record)?;
+    record.updated_at = now_iso();
+    record.revision += 1;
+    db.update(&record)?;
+    Ok(record)
+}
+
+/// 校验 event 的起止时间范围：全天 `end >= start`；定时 `end > start`（ISO8601）。
+fn validate_event_range(record: &Record) -> Result<(), CoreError> {
+    let (Some(start), Some(end)) = (record.start_at.as_deref(), record.end_at.as_deref()) else {
+        return Err(CoreError::Validation(
+            "start_at and end_at are required for events".to_string(),
+        ));
+    };
+    if crate::model::is_all_day(record) {
+        if end < start {
+            return Err(CoreError::Validation(
+                "end_at must not precede start_at".to_string(),
+            ));
+        }
+    } else {
+        let s = parse_instant(start)?;
+        let e = parse_instant(end)?;
+        if e <= s {
+            return Err(CoreError::Validation(
+                "end_at must be after start_at".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// 设置待办状态（仅 `kind = todo`）。
 pub fn set_todo_status(db: &SqliteStorage, id: &str, status: Status) -> Result<Record, CoreError> {
     let mut record = db.get(id)?;
@@ -150,9 +195,9 @@ pub fn add_subtask(
     input: TodoInput,
 ) -> Result<Record, CoreError> {
     let parent = db.get(parent_id).map_err(|e| match e {
-        CoreError::NotFound(_) => CoreError::InvalidParent(format!(
-            "parent {parent_id} does not exist"
-        )),
+        CoreError::NotFound(_) => {
+            CoreError::InvalidParent(format!("parent {parent_id} does not exist"))
+        }
         other => other,
     })?;
     if parent.kind != Kind::Todo {
@@ -205,6 +250,12 @@ fn apply_patch(record: &mut Record, patch: RecordPatch) {
     if let Some(all_day) = patch.all_day {
         set_all_day(&mut record.data, all_day);
     }
+    if let Some(recurrence) = patch.recurrence {
+        set_recurrence(&mut record.data, Some(&recurrence));
+    }
+    if let Some(minutes) = patch.reminder_minutes {
+        set_reminder_minutes(&mut record.data, minutes);
+    }
 }
 
 #[cfg(test)]
@@ -231,6 +282,8 @@ mod tests {
             location: None,
             all_day: false,
             tags: vec![],
+            recurrence: None,
+            reminder_minutes: None,
         }
     }
 
@@ -401,7 +454,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(crate::model::priority_of(&updated), Priority::High);
-        assert_eq!(crate::model::location_of(&updated).as_deref(), Some("会议室"));
+        assert_eq!(
+            crate::model::location_of(&updated).as_deref(),
+            Some("会议室")
+        );
 
         // 清除 location：Some(None) 应删除 data.location 键。
         let updated = update_record(

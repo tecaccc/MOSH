@@ -54,3 +54,4 @@ To verify the full app, use one of:
 - Treating a workspace-wide `cargo clippy --all-targets` failure on this box as a code problem — first confirm it is not the `glib-2.0` version (look for `glib-2.0 >= 2.70` in the `pkg-config` output).
 - Putting domain logic in `src-tauri` commands instead of `mosh-core`.
 - Changing the Rust model without updating `src/lib/types.ts`.
+- **Never `String::from_utf8_lossy` a network byte chunk individually.** TCP chunk boundaries can land inside a multi-byte UTF-8 char; per-chunk lossy decoding emits U+FFFD (seen in production: streamed CJK text showed `还���要`). Buffer raw bytes (`Vec<u8>`) and decode only at protocol-safe boundaries (e.g. complete SSE lines — see `SseLineBuf` in `agent/llm.rs`, regression test `sse_line_buf_survives_multibyte_char_split_across_chunks`).

@@ -7,7 +7,7 @@
  */
 
 const pad = (n: number): string => String(n).padStart(2, "0");
-const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** ISO8601 → `datetime-local` 控件所需的 `YYYY-MM-DDTHH:mm`（本地，无时区后缀）。 */
 export function toLocalInput(iso: string | null | undefined): string {

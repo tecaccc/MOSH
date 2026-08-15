@@ -16,20 +16,27 @@ import {
   updateRecord as ipcUpdateRecord,
   listEvents as ipcListEvents,
 } from "./ipc";
-import { addDays, addMonths, mondayOfWeek, monthGridStart, monthStart, todayOnly } from "./calendar-grid";
+import { addDays, addMonths, expandRecurring, mondayOfWeek, monthGridStart, monthStart, occurrenceParentId, todayOnly } from "./calendar-grid";
 import type { EventInput, Record as RecordT, RecordPatch } from "./types";
 
 /** 日历视图模式。 */
 export type CalMode = "month" | "week" | "day" | "agenda";
 
 const _events = $state<RecordT[]>([]);
+/** 展开周期后的渲染事件（occurrence id 带 `::` 后缀）。 */
+const _render = $state<RecordT[]>([]);
 let _mode = $state<CalMode>("month");
 let _cursor = $state<string>(todayOnly());
 let _editingId = $state<string | null | undefined>(undefined);
 
-/** 当前窗口内加载到内存的事件（响应式）。 */
+/** 当前窗口内加载到内存的原始事件（编辑/查找用）。 */
 export function events(): RecordT[] {
   return _events;
+}
+
+/** 展开周期后的渲染事件（视图显示用）。 */
+export function renderEvents(): RecordT[] {
+  return _render;
 }
 
 /** 当前模式（响应式）。 */
@@ -72,6 +79,17 @@ export async function loadRange(): Promise<void> {
   const { from, to } = window();
   const list = await ipcListEvents(from, to);
   _events.splice(0, _events.length, ...list);
+  _render.splice(0, _render.length, ...expandRecurring(list, from, to));
+}
+
+/**
+ * 显式加载指定 [from,to) 区间事件到内存（首页等非日历视图复用）。
+ * 不受 mode/cursor 影响：首页需固定「今日」窗口，独立于日历视图的翻页状态。
+ */
+export async function loadEvents(from: string, to: string): Promise<void> {
+  const list = await ipcListEvents(from, to);
+  _events.splice(0, _events.length, ...list);
+  _render.splice(0, _render.length, ...expandRecurring(list, from, to));
 }
 
 /** 切换模式（不主动 reload；由组件 effect 在 mode 变化时统一 reload）。 */
@@ -122,9 +140,9 @@ export function startCreateEvent(dateOnly?: string): void {
   _editingId = null;
 }
 
-/** 打开指定事件的编辑器。 */
+/** 打开指定事件的编辑器（周期发生 id 会反解为父事件 id）。 */
 export function startEditEvent(id: string): void {
-  _editingId = id;
+  _editingId = occurrenceParentId(id);
 }
 
 /** 关闭事件编辑器。 */

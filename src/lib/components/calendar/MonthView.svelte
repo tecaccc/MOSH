@@ -6,7 +6,7 @@
    */
   import {
     cursor,
-    events,
+    renderEvents,
     startCreateEvent,
     startEditEvent,
   } from "../../calendar.svelte";
@@ -35,7 +35,7 @@
   const today = todayOnly();
 
   function dayEvents(day: string): RecordT[] {
-    return orderedForDay(events(), day);
+    return orderedForDay(renderEvents(), day);
   }
 
   function onCellCreate(day: string): void {

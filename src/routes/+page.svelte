@@ -1,15 +1,20 @@
 <script lang="ts">
   /**
-   * MOSH 应用根：三栏布局。
-   *   左：Sidebar（导航 + 新建入口）
-   *   中：主视图（Today / Tasks，按 currentView 切换）
-   *   右：TodoEditor（selectedId 对应 record；null=新建；undefined=关闭隐藏）
+   * MOSH 应用根：左 Sidebar + 中主视图（按 currentView 切换）+ 编辑器。
+   * 编辑器与视图解耦，按各自 store 状态独立显示：
+   *   - 事件（EventEditor）：居中模态弹窗（Modal），新建/编辑均就地弹出；
+   *   - 待办（TodoEditor）：右栏侧边（editor-pane，展开时三栏布局）。
    */
   import { onMount } from "svelte";
+  import TitleBar from "$lib/components/TitleBar.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
-  import TasksView from "$lib/components/TasksView.svelte";
   import TodayView from "$lib/components/TodayView.svelte";
+  import HomeView from "$lib/components/HomeView.svelte";
+  import SettingsView from "$lib/components/SettingsView.svelte";
+  import ChatPanel from "$lib/components/ChatPanel.svelte";
   import TodoEditor from "$lib/components/TodoEditor.svelte";
+  import Modal from "$lib/components/Modal.svelte";
+  import ReminderToast from "$lib/components/ReminderToast.svelte";
   import CalendarPane from "$lib/components/calendar/CalendarPane.svelte";
   import EventEditor from "$lib/components/calendar/EventEditor.svelte";
   import {
@@ -17,7 +22,7 @@
     loadTodos,
     selectedRecord,
   } from "$lib/store.svelte";
-  import { editingEvent } from "$lib/calendar.svelte";
+  import { closeEditor, editingEvent } from "$lib/calendar.svelte";
 
   let loadError = $state<string | null>(null);
 
@@ -30,17 +35,14 @@
     }
   });
 
-  // 右栏编辑器：日历视图挂 EventEditor（editingEvent 非 undefined），否则 TodoEditor。
-  const calEditing = $derived(
-    currentView() === "calendar" && editingEvent() !== undefined,
-  );
-  const todoEditing = $derived(
-    currentView() !== "calendar" && selectedRecord() !== undefined,
-  );
-  const editorOpen = $derived(calEditing || todoEditing);
+  // 编辑器呈现（与当前视图解耦）：事件走模态弹窗、待办走右栏侧边。
+  const calEditing = $derived(editingEvent() !== undefined);
+  const todoEditing = $derived(selectedRecord() !== undefined);
 </script>
 
-<main class="app" data-view={currentView()}>
+<div class="shell">
+  <TitleBar />
+  <main class="app" data-view={currentView()}>
   <Sidebar />
 
   <section class="main-view">
@@ -52,54 +54,92 @@
       </div>
     {/if}
 
-    {#if currentView() === "today"}
+    {#if currentView() === "home"}
+      <HomeView />
+    {:else if currentView() === "today"}
       <TodayView />
-    {:else if currentView() === "tasks"}
-      <TasksView />
     {:else if currentView() === "calendar"}
       <CalendarPane />
+    {:else if currentView() === "agent"}
+      <ChatPanel />
+    {:else if currentView() === "settings"}
+      <SettingsView />
     {/if}
   </section>
 
-  {#if editorOpen}
+  <!-- 待办编辑器：右栏侧边 -->
+  {#if todoEditing}
     <aside class="editor-pane">
-      {#if calEditing}
-        <EventEditor event={editingEvent() ?? null} />
-      {:else}
-        <TodoEditor record={selectedRecord() ?? null} />
-      {/if}
+      <TodoEditor record={selectedRecord() ?? null} />
     </aside>
   {/if}
-</main>
+  </main>
+</div>
+
+<!-- 事件编辑器：居中模态弹窗（ESC / 点遮罩关闭，见 Modal） -->
+{#if calEditing}
+  <Modal onClose={closeEditor}>
+    <EventEditor event={editingEvent() ?? null} />
+  </Modal>
+{/if}
+
+<!-- 事件提醒：顶部弹出式通知（见 ReminderToast） -->
+<ReminderToast />
 
 <style>
+  /* Pencil 设计系统 token（docs/pencil-new.pen · Aot2d Home 首页），浅/深双主题。 */
   :global(:root) {
-    --bg: #f7f7f8;
+    --bg: #f7f6f2;
     --surface: #ffffff;
-    --surface-1: #f0f0f2;
-    --surface-2: #e6e6ea;
-    --border: #d8d8de;
-    --text: #1c1c20;
-    --text-dim: #6b6b76;
-    --accent: #4f6df5;
-    --accent-soft: #e8edff;
-    --danger: #dc2626;
-    --danger-soft: #fee2e2;
+    --surface-1: #f1ede6;
+    --surface-2: #f0ede5;
+    --sidebar-bg: #f1ede6;
+    --border: #e6e2d9;
+    --border-soft: #efebe3;
+    --text: #1c1b19;
+    --text-dim: #6c685f;
+    --text-muted: #a29c91;
+    --accent: #6d5dd3;
+    --accent-soft: #eeeefa;
+    --accent-fg: #ffffff;
+    --danger: #dd5456;
+    --danger-soft: #f7e2e2;
+    --pri-high: #dd5456;
+    --pri-med: #de8e2a;
+    --pri-low: #36ac74;
+    --cal-1: #6d5dd3;
+    --cal-2: #2ba6b5;
+    --cal-3: #de8e2a;
+    --cal-4: #d64a8b;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root) {
-      --bg: #1a1a1d;
-      --surface: #242428;
-      --surface-1: #1f1f23;
-      --surface-2: #2e2e34;
-      --border: #35353c;
-      --text: #e8e8ec;
-      --text-dim: #9a9aa6;
-      --accent: #6b86ff;
-      --accent-soft: #2a3160;
-      --danger: #f87171;
-      --danger-soft: #3a1d1d;
+      --bg: #131210;
+      --surface: #1b1a19;
+      --surface-1: #161514;
+      --surface-2: #23211f;
+      --sidebar-bg: #161514;
+      --border: #2d2b29;
+      --border-soft: #23211f;
+      --text: #ece9e3;
+      --text-dim: #9b9589;
+      --text-muted: #6c675e;
+      --accent: #8c7fea;
+      --accent-soft: #2a2740;
+      --accent-fg: #ffffff;
+      --danger: #f06d6e;
+      --danger-soft: #3a2222;
+      --pri-high: #f06d6e;
+      --pri-med: #eca84c;
+      --pri-low: #52c490;
+      --cal-1: #8c7fea;
+      --cal-2: #45c2d0;
+      --cal-3: #eca84c;
+      --cal-4: #e66fa3;
     }
   }
 
@@ -111,22 +151,33 @@
   :global(body) {
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
       "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
     font-size: 14px;
   }
 
+  .shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
   .app {
     display: grid;
-    grid-template-columns: 200px 1fr;
-    height: 100vh;
+    grid-template-columns: 248px 1fr;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .app:has(.editor-pane) {
-    grid-template-columns: 200px 1fr 340px;
+    grid-template-columns: 248px 1fr 340px;
   }
 
   .main-view {
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
     border-right: 1px solid var(--border);
   }

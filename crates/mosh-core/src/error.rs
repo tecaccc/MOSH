@@ -18,6 +18,12 @@ pub enum CoreError {
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("weather error: {0}")]
+    Weather(String),
+
+    #[error("network error: {0}")]
+    Network(String),
 }
 
 impl From<rusqlite::Error> for CoreError {
@@ -29,6 +35,12 @@ impl From<rusqlite::Error> for CoreError {
 impl From<rusqlite_migration::Error> for CoreError {
     fn from(e: rusqlite_migration::Error) -> Self {
         CoreError::Db(e.to_string())
+    }
+}
+
+impl From<reqwest::Error> for CoreError {
+    fn from(e: reqwest::Error) -> Self {
+        CoreError::Network(e.to_string())
     }
 }
 

@@ -3,11 +3,19 @@
    * 待办编辑/新建表单。
    * - `record === null` → 新建模式（调 createTodo）。
    * - `record === RecordT` → 编辑模式（调 updateRecord，只放改动字段）。
+   * 编辑顶层待办时展示「子任务」区（设计稿 Detail · Progress）：
+   * 计数（done/total）+ 6px 进度条 + 子任务列表（勾选/编辑/删除）+ 快速添加。
+   * 编辑子任务时不可再嵌套（v1 限 1 层），提供「返回父任务」。
    * 保存成功后刷新 store 并关闭编辑器。
    */
   import {
+    addSubtask,
     closeEditor,
     createTodo,
+    deleteRecord,
+    setTodoStatus,
+    startEdit,
+    subtasksOf,
     updateRecord,
   } from "../store.svelte";
   import { fromLocalInput, toLocalInput } from "../datetime";
@@ -127,6 +135,71 @@
     return sa.some((t, i) => t !== sb[i]);
   }
 
+  // —— 子任务区（仅编辑顶层待办时展示；响应式：依赖 records）——
+  const isTopTodo = $derived(record !== null && record.parent_id === null);
+  const subs = $derived(record !== null && record.parent_id === null ? subtasksOf(record.id) : []);
+  /** 计数口径：排除已取消（cancelled 不计入进度）。 */
+  const subsLive = $derived(subs.filter((s) => s.status !== "cancelled"));
+  const subsDone = $derived(subsLive.filter((s) => s.status === "done").length);
+  const progressPct = $derived(
+    subsLive.length === 0 ? 0 : (subsDone / subsLive.length) * 100,
+  );
+
+  let subInput = $state("");
+  let subBusy = $state(false);
+  let subError = $state<string | null>(null);
+
+  async function onAddSub(event: Event) {
+    event.preventDefault();
+    if (!record || !isTopLevel(record)) return;
+    const title = subInput.trim();
+    if (title.length === 0) {
+      subError = "子任务标题必填";
+      return;
+    }
+    subBusy = true;
+    subError = null;
+    try {
+      await addSubtask(record.id, { title, priority: "none", tags: [] });
+      subInput = "";
+    } catch (e) {
+      subError = e instanceof Error ? e.message : String(e);
+    } finally {
+      subBusy = false;
+    }
+  }
+
+  async function onToggleSub(s: RecordT) {
+    if (subBusy) return;
+    subBusy = true;
+    subError = null;
+    try {
+      await setTodoStatus(s.id, s.status === "done" ? "active" : "done");
+    } catch (e) {
+      subError = e instanceof Error ? e.message : String(e);
+    } finally {
+      subBusy = false;
+    }
+  }
+
+  async function onDeleteSub(s: RecordT) {
+    if (subBusy) return;
+    if (!confirm(`删除子任务「${s.title}」？此为软删，数据保留于库。`)) return;
+    subBusy = true;
+    subError = null;
+    try {
+      await deleteRecord(s.id);
+    } catch (e) {
+      subError = e instanceof Error ? e.message : String(e);
+    } finally {
+      subBusy = false;
+    }
+  }
+
+  function isTopLevel(r: RecordT): boolean {
+    return r.parent_id === null;
+  }
+
   function onCancel() {
     closeEditor();
   }
@@ -184,6 +257,80 @@
     <span class="label">标签（逗号分隔）</span>
     <input bind:value={tagsText} placeholder="work, personal" />
   </label>
+
+  {#if !isNew && isTopTodo}
+    <div class="subtasks-sec">
+      <div class="sub-head">
+        <span class="sub-title">子任务</span>
+        {#if subsLive.length > 0}
+          <span class="sub-count">{subsDone} / {subsLive.length}</span>
+        {/if}
+      </div>
+      {#if subsLive.length > 0}
+        <div class="track">
+          <div class="fill" style:width="{progressPct}%"></div>
+        </div>
+      {/if}
+      {#if subs.length > 0}
+        <ul class="sub-list">
+          {#each subs as s (s.id)}
+            <li class="sub-row" class:cancelled={s.status === "cancelled"}>
+              <input
+                type="checkbox"
+                checked={s.status === "done"}
+                onchange={() => onToggleSub(s)}
+                disabled={subBusy}
+                aria-label={s.status === "done" ? "标记为未完成" : "标记为已完成"}
+              />
+              <button
+                type="button"
+                class="sub-name"
+                class:done={s.status !== "active"}
+                onclick={() => startEdit(s.id)}
+                title="编辑子任务"
+              >{s.title}</button>
+              <button
+                type="button"
+                class="sub-del"
+                onclick={() => onDeleteSub(s)}
+                disabled={subBusy}
+                aria-label="删除子任务">✕</button>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <div class="sub-empty">暂无子任务</div>
+      {/if}
+      <div class="sub-add">
+        <input
+          bind:value={subInput}
+          placeholder="添加子任务，回车确认…"
+          disabled={subBusy}
+          onkeydown={(e) => e.key === "Enter" && onAddSub(e)}
+        />
+        <button
+          type="button"
+          class="sub-add-btn"
+          onclick={(e) => onAddSub(e)}
+          disabled={subBusy || subInput.trim().length === 0}>添加</button
+        >
+      </div>
+      {#if subError}
+        <div class="sub-error">{subError}</div>
+      {/if}
+    </div>
+  {:else if record}
+    <div class="sub-note">
+      这是子任务（v1 限 1 层，不可再嵌套）。
+      {#if record.parent_id}
+        <button
+          type="button"
+          class="back-link"
+          onclick={() => startEdit(record.parent_id!)}
+        >← 返回父任务</button>
+      {/if}
+    </div>
+  {/if}
 
   <div class="actions">
     <button type="button" onclick={onCancel} disabled={saving}>取消</button>
@@ -303,5 +450,188 @@
     border-color: var(--accent);
     color: #fff;
     font-weight: 600;
+  }
+
+  /* —— 子任务区（设计稿 Detail · Progress）—— */
+  .subtasks-sec {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding-top: 0.2rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .sub-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .sub-title {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  .sub-count {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+
+  .fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    transition: width 0.2s ease;
+  }
+
+  .sub-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sub-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.2rem;
+    border-radius: 6px;
+  }
+
+  .sub-row:hover {
+    background: var(--surface-2);
+  }
+
+  .sub-row input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    cursor: pointer;
+    accent-color: var(--accent);
+  }
+
+  .sub-name {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    padding: 0;
+    font: inherit;
+    font-size: 0.88rem;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sub-name.done {
+    color: var(--text-dim);
+    text-decoration: line-through;
+  }
+
+  .sub-row.cancelled .sub-name {
+    color: var(--text-muted);
+    text-decoration: line-through;
+  }
+
+  .sub-del {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.78rem;
+    padding: 0.15rem 0.35rem;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+
+  .sub-del:hover:not(:disabled) {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  .sub-del:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .sub-empty {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding: 0.15rem 0.2rem;
+  }
+
+  .sub-add {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .sub-add input {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.85rem;
+  }
+
+  .sub-add-btn {
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    border-radius: 6px;
+    padding: 0.35rem 0.8rem;
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .sub-add-btn:hover:not(:disabled) {
+    filter: brightness(1.05);
+  }
+
+  .sub-add-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .sub-error {
+    background: var(--danger-soft);
+    color: var(--danger);
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+  }
+
+  .sub-note {
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    padding-top: 0.2rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .back-link {
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 0.82rem;
+    padding: 0;
+    margin-left: 0.25rem;
+  }
+
+  .back-link:hover {
+    text-decoration: underline;
   }
 </style>

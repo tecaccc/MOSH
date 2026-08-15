@@ -29,14 +29,18 @@ import type {
   TodoInput,
 } from "./types";
 
-/** 视图枚举。 */
-export type View = "today" | "tasks" | "calendar";
+/**
+ * 视图枚举（对齐设计稿 docs/pencil-new.pen 侧栏导航）：
+ * 首页（home 仪表盘）/ 今日（today，聚焦当天）/ 日历（calendar）/
+ * 助手（agent，AI 聊天面板，任务 08-15-agent-v1）/ 设置（settings）。
+ */
+export type View = "home" | "today" | "calendar" | "agent" | "settings";
 
 /** 当前加载到内存的全部（未软删）todo。 */
 export const records = $state<RecordT[]>([]);
 
 /** 当前激活的视图（私有可重赋值状态）。 */
-let _currentView = $state<View>("today");
+let _currentView = $state<View>("home");
 
 /** 只读响应式访问：当前激活的视图（组件在响应式上下文里调用读取）。 */
 export function currentView(): View {

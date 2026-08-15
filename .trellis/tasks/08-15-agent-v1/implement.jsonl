@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": "crates/mosh-core/src/service.rs", "reason": "工具 handler 直接调用的领域层"}
+{"file": "crates/mosh-core/src/weather.rs", "reason": "出站 HTTP 集成 + settings 配置的既有模式"}
+{"file": "src/lib/store.svelte.ts", "reason": "runes 函数导出模式的参照"}
+{"file": "crates/mosh-core/src/agent/", "type": "directory", "reason": "本次新增的 agent 模块（llm/tools/runner/events）"}
+{"file": "src/lib/agent.svelte.ts", "reason": "Agent 前端 store（runes 函数导出模式）"}

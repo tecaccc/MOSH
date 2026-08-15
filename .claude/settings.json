@@ -57,7 +57,19 @@
       "Bash(python3 -c \"import json;print\\('status:',json.load\\(open\\('.trellis/tasks/08-12-todo/task.json'\\)\\)['status']\\)\")",
       "Bash(git checkout *)",
       "Bash(python3 ./.trellis/scripts/task.py set-branch 08-12-todo feat/08-12-todo)",
-      "WebFetch(domain:v2.tauri.app)"
+      "WebFetch(domain:v2.tauri.app)",
+      "Bash(/bin/cp -f /data/workspace/MOSH/docs/images/generated-1786527808715.png /data/workspace/MOSH/static/home-banner.png)",
+      "Bash(npm view *)",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(break)",
+      "Bash(node -e \"const s=require\\('./package.json'\\).scripts; console.log\\(JSON.stringify\\(s,null,2\\)\\)\")",
+      "Bash(python3 ./.trellis/scripts/task.py create \"集成真实天气与设置页\" --slug weather-settings)",
+      "Bash(python3 ./.trellis/scripts/task.py start)",
+      "Bash(python3 ./.trellis/scripts/task.py start .trellis/tasks/08-14-weather-settings)",
+      "Bash(python3 ./.trellis/scripts/get_context.py --mode packages)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
     ]
   },
   "hooks": {
