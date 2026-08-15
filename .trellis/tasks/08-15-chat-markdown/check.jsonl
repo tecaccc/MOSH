@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "代码评审清单与质量门命令"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "验证未违反 runes 导出规则"}
