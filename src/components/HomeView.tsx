@@ -1,21 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addDays, mondayOfWeek, todayOnly } from "../lib/calendar-grid";
-import { formatTime } from "../lib/datetime";
+import { addDays, eventOnDay, mondayOfWeek, todayOnly } from "../lib/calendar-grid";
+import { formatDate, formatTime, toDateOnly } from "../lib/datetime";
 import { lunarDay, lunarFull, lunarYearMonth } from "../lib/lunar";
 import { useAppStore } from "../state/store";
 import { editingEventOf, useCalendarStore } from "../state/calendar";
 import { useWeatherStore } from "../state/weather";
 import { WEATHER_ICONS, weatherInfo, type WeatherIcon } from "../lib/weather-code";
-import type { Record as RecordT } from "../lib/types";
+import type { Priority, Record as RecordT } from "../lib/types";
 import styles from "./HomeView.module.css";
 
 /**
  * 首页（仪表盘）：Banner（天气 + 时钟 + 问候 + 插画）、Stats 四卡、
- * 今日日程时间轴、月历 mini-grid（每日农历、高亮今日、点日钻取）。
+ * 日程安排（今天起 30 天，按日分组时间轴）、待办事项卡、
+ * 月历 mini-grid（每日农历、高亮今日、点日钻取）。
  */
 
 const now = new Date();
 const today = todayOnly();
+const tomorrow = addDays(today, 1);
+/** 「日程安排」卡片的加载与展示窗口：今天起 N 天（对齐议程视图惯例）。 */
+const SCHEDULE_DAYS = 30;
 const pad = (n: number): string => String(n).padStart(2, "0");
 const DOW = "日一二三四五六";
 const USER_NAME = "Connor";
@@ -23,6 +27,15 @@ const round = Math.round;
 
 const NOTES_STAT = { value: "12", sub: "3 篇未归档" };
 const PROJECTS_STAT = { value: "3", sub: "全部正常" };
+
+const PRIO_RANK: Record<Priority, number> = { high: 0, medium: 1, low: 2, none: 3 };
+const PRIO_LABEL: Record<Priority, string> = { none: "无", low: "低", medium: "中", high: "高" };
+const PRIO_DOT: Record<Priority, string> = {
+  none: styles.pNone,
+  low: styles.pLow,
+  medium: styles.pMedium,
+  high: styles.pHigh,
+};
 
 const greeting = (() => {
   const h = now.getHours();
@@ -47,6 +60,30 @@ function isSameDay(a: Date, b: Date): boolean {
   );
 }
 
+/** date-only 的本地星期（`周X`）。 */
+function weekdayOf(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return `周${DOW[new Date(y, m - 1, d).getDay()]}`;
+}
+
+/** 分组头：今天 / 明天 / M月D日。 */
+function dayLabel(day: string): string {
+  if (day === today) return "今天";
+  if (day === tomorrow) return "明天";
+  return formatDate(day);
+}
+
+/** 待办截止的紧凑展示（仅日期；空 → ""）。 */
+function dueLabelOf(r: RecordT): string {
+  return formatDate(toDateOnly(r.end_at));
+}
+
+/** 待办是否逾期（按本地日期比较；当天截止不算逾期）。 */
+function isOverdue(r: RecordT): boolean {
+  const day = toDateOnly(r.end_at);
+  return day !== "" && day < today;
+}
+
 /** 图标（安全静态串，dangerouslySetInnerHTML 渲染自家资源）。 */
 function WIcon({ name }: { name: WeatherIcon }) {
   return <span dangerouslySetInnerHTML={{ __html: WEATHER_ICONS[name] }} />;
@@ -55,8 +92,9 @@ function WIcon({ name }: { name: WeatherIcon }) {
 export default function HomeView() {
   const setView = useAppStore((s) => s.setView);
   const records = useAppStore((s) => s.records);
+  const setTodoStatus = useAppStore((s) => s.setTodoStatus);
+  const startEdit = useAppStore((s) => s.startEdit);
   const renderEvents = useCalendarStore((s) => s.renderEvents);
-  const calEvents = useCalendarStore((s) => s.events);
   const editingId = useCalendarStore((s) => s.editingId);
   const loadEvents = useCalendarStore((s) => s.loadEvents);
   const startEditEvent = useCalendarStore((s) => s.startEditEvent);
@@ -103,31 +141,73 @@ export default function HomeView() {
 
   useEffect(() => {
     void loadWeather();
-    void loadEvents(today, addDays(today, 1)).catch(() => {});
+    void loadEvents(today, addDays(today, SCHEDULE_DAYS)).catch(() => {});
   }, [loadWeather, loadEvents]);
 
-  // 事件编辑器关闭后刷新今日窗口（编辑可能换走了 mode/cursor 窗口）。
-  const editing = editingEventOf(calEvents, editingId) !== undefined;
+  // 事件编辑器关闭后刷新日程窗口（编辑可能换走了 mode/cursor 窗口）。
+  const editing = editingEventOf(renderEvents, editingId) !== undefined;
   const wasEditing = useRef(false);
   useEffect(() => {
     if (wasEditing.current && !editing) {
-      void loadEvents(today, addDays(today, 1)).catch(() => {});
+      void loadEvents(today, addDays(today, SCHEDULE_DAYS)).catch(() => {});
     }
     wasEditing.current = editing;
   }, [editing, loadEvents]);
 
-  const todayEvents = useMemo(
+  // —— 日程安排：窗口内全部事件（升序）+ 今日子集（统计卡）——
+  const allEvents = useMemo(
     () =>
       [...renderEvents]
         .filter((e) => e.status !== "cancelled")
         .sort((a: RecordT, b: RecordT) => (a.start_at ?? "").localeCompare(b.start_at ?? "")),
     [renderEvents],
   );
+  const todayEvents = useMemo(() => allEvents.filter((e) => eventOnDay(e, today)), [allEvents]);
   const nextEvent = todayEvents.find((e) => {
     if (e.data.all_day === true) return false;
     const s = new Date(e.start_at ?? "");
     return !Number.isNaN(s.getTime()) && s.getTime() >= now.getTime();
   });
+
+  // —— 按日分组（今天起 30 天；全天归开始日，定时按触及日）——
+  const scheduleGroups = useMemo(() => {
+    return Array.from({ length: SCHEDULE_DAYS }, (_, i) => addDays(today, i))
+      .map((day) => {
+        const starting = allEvents.filter(
+          (e) => e.data.all_day === true && (e.start_at ?? "") === day,
+        );
+        const timed = allEvents.filter((e) => e.data.all_day !== true && eventOnDay(e, day));
+        const items = [...starting, ...timed].sort((a, b) =>
+          (a.start_at ?? "").localeCompare(b.start_at ?? ""),
+        );
+        return { day, items };
+      })
+      .filter((g) => g.items.length > 0);
+  }, [allEvents]);
+  const scheduleCount = scheduleGroups.reduce((n, g) => n + g.items.length, 0);
+
+  // —— 待办事项卡：进行中的顶层待办，按截止/优先级排序（逾期自然置顶）——
+  const activeTodos = useMemo(() => {
+    return records
+      .filter((r) => r.parent_id === null && r.status === "active")
+      .sort((a, b) => {
+        const ka = `${a.end_at ?? "9999-12-31T23:59:59Z"}|${PRIO_RANK[a.data.priority ?? "none"]}|${a.title}`;
+        const kb = `${b.end_at ?? "9999-12-31T23:59:59Z"}|${PRIO_RANK[b.data.priority ?? "none"]}|${b.title}`;
+        return ka.localeCompare(kb);
+      });
+  }, [records]);
+
+  // 勾选完成（单条互斥防抖）。
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  async function toggleTodo(id: string) {
+    if (togglingId !== null) return;
+    setTogglingId(id);
+    try {
+      await setTodoStatus(id, "done");
+    } finally {
+      setTogglingId(null);
+    }
+  }
 
   // —— 月历 mini-grid（本地月份状态，独立于日历视图翻页）——
   const [calYm, setCalYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
@@ -217,6 +297,7 @@ export default function HomeView() {
                 </>
               )}
             </div>
+            <span className={styles["banner-sep"]} aria-hidden="true">\</span>
             <div className={styles["date-block"]}>
               <div className={styles.clock}>{clock}</div>
               <div className={styles["date-sub"]}>{bigDate} {dayLine}</div>
@@ -301,6 +382,7 @@ export default function HomeView() {
 
       {/* Content */}
       <div className={styles.content}>
+        {/* 日程安排 */}
         <section className={`${styles.card} ${styles.schedule}`}>
           <header className={styles["sec-head"]}>
             <div className={styles["sec-title"]}>
@@ -310,46 +392,123 @@ export default function HomeView() {
                   <path d="M3.5 9.5h17" /><path d="M8 3v4M16 3v4" />
                 </svg>
               </span>
-              <h2>今日日程</h2>
-              <span className={styles.badge}>{todayEvents.length}</span>
+              <h2>日程安排</h2>
+              <span className={styles.badge}>{scheduleCount}</span>
             </div>
             <button type="button" className={styles.link} onClick={() => setView("calendar")}>
               查看全部 →
             </button>
           </header>
 
-          {todayEvents.length === 0 ? (
+          {scheduleGroups.length === 0 ? (
             <div className={styles.empty}>
-              今日暂无日程。
-              <span className={styles.hint}>去「日历」新建事件。</span>
+              未来 {SCHEDULE_DAYS} 天暂无日程。
+              <span className={styles.hint}>去「日历」新建事件，或让 AI 助手帮你安排。</span>
             </div>
           ) : (
-            <ul className={styles["ev-list"]}>
-              {todayEvents.map((ev, i) => (
-                <li key={ev.id}>
-                  <button type="button" className={styles.ev} onClick={() => startEditEvent(ev.id)}>
-                    <span className={styles.tl}>
-                      <span className={styles["tl-time"]}>
-                        {ev.data.all_day === true
-                          ? "全天"
-                          : `${formatTime(ev.start_at)} — ${formatTime(ev.end_at)}`}
-                      </span>
-                      <span className={styles["tl-dot"]} style={{ background: CAL_COLORS[i % 4] }} />
-                      <span
-                        className={styles["tl-line"]}
-                        style={{ background: i < todayEvents.length - 1 ? "var(--border-soft)" : "transparent" }}
-                      />
-                    </span>
-                    <span className={styles["ev-body"]}>
-                      <span className={styles["ev-title"]}>{ev.title}</span>
-                      {typeof ev.data.location === "string" && ev.data.location ? (
-                        <span className={styles["ev-loc"]}>{ev.data.location as string}</span>
-                      ) : null}
-                    </span>
-                  </button>
-                </li>
+            <div className={styles["sched-scroll"]}>
+              {scheduleGroups.map((g) => (
+                <div key={g.day} className={styles["day-group"]}>
+                  <div className={`${styles["day-head"]}${g.day === today ? ` ${styles.isToday}` : ""}`}>
+                    <span className={styles["day-main"]}>{dayLabel(g.day)}</span>
+                    <span className={styles["day-sub"]}>{weekdayOf(g.day)}</span>
+                  </div>
+                  <ul className={styles["ev-list"]}>
+                    {g.items.map((ev, i) => (
+                      <li key={ev.id}>
+                        <button type="button" className={styles.ev} onClick={() => startEditEvent(ev.id)}>
+                          <span className={styles.tl}>
+                            <span className={styles["tl-time"]}>
+                              {ev.data.all_day === true
+                                ? "全天"
+                                : `${formatTime(ev.start_at)} — ${formatTime(ev.end_at)}`}
+                            </span>
+                            <span className={styles["tl-dot"]} style={{ background: CAL_COLORS[i % 4] }} />
+                            <span
+                              className={styles["tl-line"]}
+                              style={{ background: i < g.items.length - 1 ? "var(--border-soft)" : "transparent" }}
+                            />
+                          </span>
+                          <span className={styles["ev-body"]}>
+                            <span className={styles["ev-title"]}>{ev.title}</span>
+                            {typeof ev.data.location === "string" && ev.data.location ? (
+                              <span className={styles["ev-loc"]}>{ev.data.location as string}</span>
+                            ) : null}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ))}
-            </ul>
+            </div>
+          )}
+        </section>
+
+        {/* 待办事项 */}
+        <section className={`${styles.card} ${styles.todos}`}>
+          <header className={styles["sec-head"]}>
+            <div className={styles["sec-title"]}>
+              <span className={styles["sec-ico"]}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="18" height="18">
+                  <path d="M3.5 6.5l2 2 3.5-4" /><path d="M11 7h9.5" />
+                  <path d="M3.5 13l2 2 3.5-4" /><path d="M11 13.5h9.5" />
+                  <path d="M3.5 19.5l2 2 3.5-4" /><path d="M11 20h9.5" />
+                </svg>
+              </span>
+              <h2>待办事项</h2>
+              <span className={styles.badge}>{activeTodos.length}</span>
+            </div>
+            <button type="button" className={styles.link} onClick={() => setView("today")}>
+              查看全部 →
+            </button>
+          </header>
+
+          {activeTodos.length === 0 ? (
+            <div className={styles.empty}>
+              暂无进行中的待办。
+              <span className={styles.hint}>去「今日」视图或让 AI 助手创建。</span>
+            </div>
+          ) : (
+            <div className={styles["todo-scroll"]}>
+              <ul className={styles["todo-list"]}>
+                {activeTodos.map((t) => {
+                  const due = dueLabelOf(t);
+                  const overdue = isOverdue(t);
+                  const prio = t.data.priority ?? "none";
+                  return (
+                    <li key={t.id}>
+                      <div className={styles.todo}>
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          disabled={togglingId === t.id}
+                          onChange={() => void toggleTodo(t.id)}
+                          aria-label={`完成「${t.title}」`}
+                        />
+                        <span
+                          className={`${styles["prio-dot"]} ${PRIO_DOT[prio]}`}
+                          title={`优先级：${PRIO_LABEL[prio]}`}
+                        />
+                        <button
+                          type="button"
+                          className={styles["todo-title"]}
+                          onClick={() => startEdit(t.id)}
+                          title="编辑待办"
+                        >
+                          {t.title}
+                        </button>
+                        {due ? (
+                          <span className={`${styles["todo-due"]}${overdue ? ` ${styles.overdue}` : ""}`}>
+                            {overdue ? `逾期 ${due}` : due}
+                          </span>
+                        ) : null}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
         </section>
 

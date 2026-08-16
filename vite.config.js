@@ -7,6 +7,9 @@ import { version } from "./package.json";
 export default defineConfig({
   plugins: [react()],
   define: { __APP_VERSION__: JSON.stringify(version) },
+  // 静态资源在 static/（SvelteKit 时代惯例）：dev 直接 serve、build 拷入产物，
+  // 否则 /home-banner.png 等根路径引用 404（Vite 默认只认 public/）。
+  publicDir: "static",
   clearScreen: false,
   server: { port: 1420, strictPort: true },
   build: { outDir: "build", target: "es2022", emptyOutDir: true },

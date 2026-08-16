@@ -32,6 +32,14 @@
   gap: 32px;
   flex-wrap: wrap;
 }
+/* 天气与日期时间之间的反斜杠分隔（间距由上方 gap: 32px 提供，不贴太近）。 */
+.banner-sep {
+  font-size: 44px;
+  font-weight: 300;
+  line-height: 1;
+  color: var(--border);
+  user-select: none;
+}
 .weather {
   display: flex;
   align-items: center;
@@ -194,9 +202,14 @@ button.stat:active {
   display: flex;
   gap: 20px;
   align-items: flex-start;
+  flex-wrap: wrap;
 }
 .schedule {
-  flex: 1;
+  flex: 1.25 1 320px;
+  min-width: 0;
+}
+.todos {
+  flex: 1 1 280px;
   min-width: 0;
 }
 .minical {
@@ -331,6 +344,118 @@ button.stat:active {
 .ev-loc {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+/* 日程安排：按日分组 + 滚动区 */
+.sched-scroll {
+  max-height: 440px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 4px;
+}
+.day-group {
+  display: flex;
+  flex-direction: column;
+}
+.day-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 8px 4px;
+}
+.day-main {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.day-head.isToday .day-main {
+  color: var(--accent);
+}
+.day-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 待办事项卡 */
+.todo-scroll {
+  max-height: 440px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.todo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--radius-md);
+}
+.todo:hover {
+  background: var(--surface-2);
+}
+.todo input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+.prio-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.prio-dot.pNone {
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+.prio-dot.pLow {
+  background: #6b7280;
+}
+.prio-dot.pMedium {
+  background: #f59e0b;
+}
+.prio-dot.pHigh {
+  background: #ef4444;
+}
+.todo-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-title:hover {
+  color: var(--accent);
+}
+.todo-due {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.todo-due.overdue {
+  color: #ef4444;
+  font-weight: 600;
 }
 
 /* Mini calendar */
@@ -480,6 +605,10 @@ button.stat:active {
   }
   .content {
     flex-direction: column;
+  }
+  .schedule,
+  .todos {
+    flex: 1 1 auto;
   }
   .minical {
     width: 100%;

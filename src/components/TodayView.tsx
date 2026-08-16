@@ -180,6 +180,18 @@ export default function TodayView() {
     () => records.filter((r) => r.parent_id === null && r.status === "done" && dueOnDay(r, now)),
     [records],
   );
+  /** 已完成条目（含截止信息；与今日任务同构，供折叠区渲染）。 */
+  const doneItems = useMemo<TaskItem[]>(
+    () =>
+      doneToday.map((t) => ({
+        t,
+        due: dueLabel(t),
+        subs: [],
+        subsActive: 0,
+        subsDone: 0,
+      })),
+    [doneToday],
+  );
 
   const todayItems = useMemo<TaskItem[]>(() => {
     const seen = new Set<string>();
@@ -207,6 +219,9 @@ export default function TodayView() {
     e.stopPropagation();
     void setTodoStatusFn(r.id, r.status === "done" ? "active" : "done");
   };
+
+  // 已完成折叠区（默认收起；展开可恢复/编辑）。
+  const [doneOpen, setDoneOpen] = useState(false);
 
   return (
     <section className={styles.today}>
@@ -399,15 +414,51 @@ export default function TodayView() {
       </section>
 
       <section className={styles["done-sec"]}>
-        <div className={styles["done-head"]}>
-          <span className={styles["done-chev"]}>
+        <button
+          type="button"
+          className={styles["done-head"]}
+          onClick={() => setDoneOpen(!doneOpen)}
+          aria-expanded={doneOpen}
+        >
+          <span className={`${styles["done-chev"]}${doneOpen ? ` ${styles.open}` : ""}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="17" height="17">
               <path d="M9 6l6 6-6 6" />
             </svg>
           </span>
           <span className={styles["done-title"]}>已完成</span>
           <span className={styles["done-count"]}>· {doneToday.length}</span>
-        </div>
+        </button>
+
+        {/* 完成的待办仍可编辑/恢复：取消勾选回到进行中，点行打开编辑器。 */}
+        {doneOpen && doneItems.length > 0 ? (
+          <ul className={styles["done-list"]}>
+            {doneItems.map((item) => (
+              <li key={item.t.id}>
+                <button
+                  type="button"
+                  className={`${styles["task-row"]} ${styles["done-row"]}`}
+                  onClick={() => startEdit(item.t.id)}
+                >
+                  <Check done onToggle={(e) => toggle(e, item.t)} />
+                  <span className={styles["pri-dot"]} style={{ background: priColor(priorityOf(item.t)) }} />
+                  <span className={styles["task-mid"]}>
+                    <span className={`${styles["task-title"]} ${styles.done}`}>{item.t.title}</span>
+                    <span className={styles["task-meta"]}>
+                      {item.due.text ? (
+                        <span className={styles["due-pill"]}>{item.due.text}</span>
+                      ) : null}
+                    </span>
+                  </span>
+                  <span className={styles.chev}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="17" height="17">
+                      <path d="M9 6l6 6-6 6" />
+                    </svg>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
     </section>
   );
