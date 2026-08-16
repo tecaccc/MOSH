@@ -66,3 +66,24 @@ export function formatTime(iso: string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return "";
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * 待办完成时间点 → 本地展示串（如 "今天 14:30" / "8月15日 09:12" / "2025年12月30日 18:00"）。
+ * 今天只显示时刻；同年省年份。空/非法 → ""。
+ */
+export function formatCompletedAt(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) return `今天 ${hm}`;
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  }
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+}

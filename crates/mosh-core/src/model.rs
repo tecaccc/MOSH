@@ -192,6 +192,34 @@ pub fn set_priority(data: &mut serde_json::Value, p: Priority) {
     }
 }
 
+/// 从 `data` JSON读待办完成时间点（todo 专属；None=未完成/未记录）。
+/// ISO8601；由 `set_todo_status` / patch status→done 时自动写入。
+pub fn completed_at_of(record: &Record) -> Option<String> {
+    record
+        .data
+        .get("completed_at")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// 把完成时间点写入（或清除）`data.completed_at`。`None` 表示移除该字段
+/// （恢复为未完成时清除，避免残留过期时间点）。
+pub fn set_completed_at(data: &mut serde_json::Value, at: Option<&str>) {
+    if data.is_null() {
+        *data = serde_json::Value::Object(BTreeMap::new().into_iter().collect());
+    }
+    if let Some(obj) = data.as_object_mut() {
+        match at {
+            Some(s) => {
+                obj.insert("completed_at".to_string(), serde_json::Value::String(s.to_string()));
+            }
+            None => {
+                obj.remove("completed_at");
+            }
+        }
+    }
+}
+
 /// 从 `data` JSON 读 location（event 专属）。
 pub fn location_of(record: &Record) -> Option<String> {
     record

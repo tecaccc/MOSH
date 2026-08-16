@@ -395,6 +395,7 @@ fn list_todos(db: &SqliteStorage, args: &Value) -> Result<Value, CoreError> {
             json!({
                 "id": r.id, "title": r.title, "status": r.status,
                 "due_at": r.end_at, "priority": crate::model::priority_of(r),
+                "completed_at": crate::model::completed_at_of(r),
             })
         })
         .collect();

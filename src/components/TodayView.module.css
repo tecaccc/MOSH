@@ -326,6 +326,10 @@
   background: var(--danger-soft);
   color: var(--danger);
 }
+.due-pill.done-pill {
+  background: rgba(54, 172, 116, 0.12);
+  color: var(--pri-low);
+}
 .due-pill .due-ico {
   display: flex;
 }

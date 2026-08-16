@@ -28,6 +28,8 @@ export interface RecordData {
   recurrence?: string;
   /** 提前多少分钟提醒（event 专属；缺省 0 = 不提醒）。 */
   reminder_minutes?: number;
+  /** 待办完成时间点（todo 专属；后端状态变 done 时自动写入，恢复时清除）。 */
+  completed_at?: string;
   [key: string]: unknown;
 }
 

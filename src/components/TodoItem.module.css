@@ -71,6 +71,11 @@ input[type="checkbox"] {
   font-weight: 600;
 }
 
+.due.completed {
+  color: var(--pri-low);
+  font-weight: 600;
+}
+
 .tags {
   display: inline-flex;
   gap: 0.25rem;

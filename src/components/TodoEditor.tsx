@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { fromLocalInput, toLocalInput } from "../lib/datetime";
+import { fromLocalInput, formatCompletedAt, toLocalInput } from "../lib/datetime";
 import { subtasksOf, useAppStore } from "../state/store";
 import { useDialogStore } from "../state/dialog";
 import type { Priority, Record as RecordT, Status } from "../lib/types";
@@ -227,14 +227,22 @@ export default function TodoEditor({ record }: { record: RecordT | null }) {
       </div>
 
       {!isNew ? (
-        <label className={styles.field}>
-          <span className={styles.label}>状态</span>
-          <select value={status} onChange={(e) => setStatus(e.target.value as Status)}>
-            <option value="active">进行中</option>
-            <option value="done">已完成</option>
-            <option value="cancelled">已取消</option>
-          </select>
-        </label>
+        <div className={styles.row}>
+          <label className={styles.field}>
+            <span className={styles.label}>状态</span>
+            <select value={status} onChange={(e) => setStatus(e.target.value as Status)}>
+              <option value="active">进行中</option>
+              <option value="done">已完成</option>
+              <option value="cancelled">已取消</option>
+            </select>
+          </label>
+          {status === "done" && record.data.completed_at ? (
+            <div className={styles.field}>
+              <span className={styles.label}>完成时间</span>
+              <div className={styles["completed-at"]}>✓ {formatCompletedAt(record.data.completed_at)}</div>
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       <label className={styles.field}>

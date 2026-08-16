@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { formatCompletedAt } from "../lib/datetime";
 import { priorityOf, subtasksOf, useAppStore } from "../state/store";
 import { useDialogStore } from "../state/dialog";
 import type { Record as RecordT, Status } from "../lib/types";
@@ -45,6 +46,7 @@ export default function TodoItem({ record }: { record: RecordT }) {
   const [error, setError] = useState<string | null>(null);
 
   const dueLabel = formatDue(record.end_at);
+  const completedLabel = formatCompletedAt(record.data.completed_at);
   const overdue = useMemo(() => {
     if (!record.end_at || record.status === "done") return false;
     const d = new Date(record.end_at);
@@ -124,7 +126,9 @@ export default function TodoItem({ record }: { record: RecordT }) {
           <span className={styles.title}>{record.title}</span>
         </button>
 
-        {dueLabel ? (
+        {isDone && completedLabel ? (
+          <span className={`${styles.due} ${styles.completed}`} title="完成时间点">✓ {completedLabel}</span>
+        ) : dueLabel ? (
           <span className={`${styles.due}${overdue ? ` ${styles.overdue}` : ""}`}>{dueLabel}</span>
         ) : null}
 

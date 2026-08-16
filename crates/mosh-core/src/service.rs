@@ -175,11 +175,17 @@ fn validate_event_range(record: &Record) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// 设置待办状态（仅 `kind = todo`）。
+/// 设置待办状态（仅 `kind = todo`）。置 `done` 时在 `data.completed_at` 记录
+/// 完成时间点；恢复为其它状态时清除（重复置 done 不刷新原时间点）。
 pub fn set_todo_status(db: &SqliteStorage, id: &str, status: Status) -> Result<Record, CoreError> {
     let mut record = db.get(id)?;
     if record.kind != Kind::Todo {
         return Err(CoreError::Validation(format!("{id} is not a todo")));
+    }
+    if record.status != Status::Done && status == Status::Done {
+        crate::model::set_completed_at(&mut record.data, Some(&now_iso()));
+    } else if status != Status::Done {
+        crate::model::set_completed_at(&mut record.data, None);
     }
     record.status = status;
     record.updated_at = now_iso();
@@ -230,7 +236,15 @@ fn apply_patch(record: &mut Record, patch: RecordPatch) {
         record.description = description;
     }
     if let Some(status) = patch.status {
+        let was = record.status;
         record.status = status;
+        // 状态变更同步维护完成时间点（与 set_todo_status 同语义：
+        // 新完成→写入；恢复→清除；重复 done 不刷新）。event 不产生 done 状态，无副作用。
+        if was != Status::Done && status == Status::Done {
+            crate::model::set_completed_at(&mut record.data, Some(&now_iso()));
+        } else if status != Status::Done {
+            crate::model::set_completed_at(&mut record.data, None);
+        }
     }
     if let Some(start_at) = patch.start_at {
         record.start_at = start_at;
@@ -329,6 +343,46 @@ mod tests {
         let updated = set_todo_status(&db, &rec.id, Status::Done).unwrap();
         assert_eq!(updated.status, Status::Done);
         assert_eq!(db.get(&rec.id).unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn done_records_completed_at_and_reactivate_clears() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let rec = create_todo(&db, input("任务")).unwrap();
+        assert!(crate::model::completed_at_of(&rec).is_none());
+
+        // 完成时写入时间点。
+        let done = set_todo_status(&db, &rec.id, Status::Done).unwrap();
+        let at = crate::model::completed_at_of(&done).expect("completed_at should be set");
+        assert!(chrono::DateTime::parse_from_rfc3339(&at).is_ok());
+
+        // 重复置 done 不刷新。
+        let again = set_todo_status(&db, &rec.id, Status::Done).unwrap();
+        assert_eq!(crate::model::completed_at_of(&again).as_deref(), Some(at.as_str()));
+
+        // 恢复为进行中时清除。
+        let revived = set_todo_status(&db, &rec.id, Status::Active).unwrap();
+        assert!(crate::model::completed_at_of(&revived).is_none());
+    }
+
+    #[test]
+    fn patch_status_done_records_completed_at() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let rec = create_todo(&db, input("任务")).unwrap();
+        let patch = RecordPatch {
+            status: Some(Status::Done),
+            ..Default::default()
+        };
+        let updated = update_record(&db, &rec.id, patch).unwrap();
+        assert!(crate::model::completed_at_of(&updated).is_some());
+
+        // patch 恢复 active → 清除。
+        let patch = RecordPatch {
+            status: Some(Status::Active),
+            ..Default::default()
+        };
+        let revived = update_record(&db, &rec.id, patch).unwrap();
+        assert!(crate::model::completed_at_of(&revived).is_none());
     }
 
     #[test]

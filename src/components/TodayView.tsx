@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { addDays, todayOnly } from "../lib/calendar-grid";
-import { formatTime } from "../lib/datetime";
+import { formatCompletedAt, formatTime } from "../lib/datetime";
 import { useAppStore } from "../state/store";
 import { editingEventOf, useCalendarStore } from "../state/calendar";
 import type { Priority, Record as RecordT } from "../lib/types";
@@ -446,6 +446,11 @@ export default function TodayView() {
                     <span className={styles["task-meta"]}>
                       {item.due.text ? (
                         <span className={styles["due-pill"]}>{item.due.text}</span>
+                      ) : null}
+                      {item.t.data.completed_at ? (
+                        <span className={`${styles["due-pill"]} ${styles["done-pill"]}`}>
+                          ✓ 完成于 {formatCompletedAt(item.t.data.completed_at)}
+                        </span>
                       ) : null}
                     </span>
                   </span>
