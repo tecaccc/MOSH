@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8677F0"/>
+      <stop offset="1" stop-color="#5A48C9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角底板（~22.7% 圆角，squircle 观感） -->
+  <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#bg)"/>
+
+  <!-- 几何 M（白，圆头圆角连接） -->
+  <path d="M 292 700 L 292 356 L 500 536 L 708 356 L 708 700"
+        fill="none" stroke="#FFFFFF" stroke-width="92"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 待办对勾角标（完成态绿 + 白描边） -->
+  <circle cx="760" cy="760" r="112" fill="#36AC74" stroke="#FFFFFF" stroke-width="20"/>
+  <path d="M 712 762 L 748 798 L 814 722"
+        fill="none" stroke="#FFFFFF" stroke-width="46"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
