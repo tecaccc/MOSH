@@ -1,14 +1,60 @@
 //! 工具注册表：JSON Schema + handler 直调 [`crate::service`]（无 IPC 跳变）。
 //!
-//! v1 安全策略：仅创建/查询/完成类工具，**不含 update/delete**——最坏结果是多建
-//! 一条记录，前端工具卡片「撤销」（软删）即可回滚。`requires_confirm` 字段是 v2
-//! MCP 外部工具的授权插槽（内置工具恒 false）。
+//! 安全策略：删除类工具仅提供日程软删（delete_event / delete_events）——软删
+//! 保留数据行（墓碑），误删可从库中恢复；且提示词要求 id 必须来自查询结果，
+//! 降低误删风险。待办侧仍不提供删除（set_todo_status cancelled 即视觉移除）。
+//! `requires_confirm` 字段是 v2 MCP 外部工具的授权插槽（内置工具恒 false）。
 
 use crate::error::CoreError;
 use crate::model::{EventInput, Priority, RecordFilter, Status, TodoInput};
 use crate::service;
 use crate::storage::SqliteStorage;
 use serde_json::{json, Value};
+
+/// 工具审批模式（权限管理）：决定哪些工具调用需人工批准。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionMode {
+    /// 免审批：全部工具直接执行（默认，与 v1 行为一致）。
+    #[default]
+    Auto,
+    /// 仅写操作需审批：内置只读查询放行，写/删与全部 MCP 工具需批准。
+    Write,
+    /// 全部工具需审批。
+    All,
+}
+
+impl PermissionMode {
+    /// 与持久化字符串（settings `ai_permission_mode`）互转。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PermissionMode::Auto => "auto",
+            PermissionMode::Write => "write",
+            PermissionMode::All => "all",
+        }
+    }
+
+    /// 解析持久化值（非法/缺省 → Auto）。
+    pub fn parse(s: &str) -> PermissionMode {
+        match s.trim() {
+            "write" => PermissionMode::Write,
+            "all" => PermissionMode::All,
+            _ => PermissionMode::Auto,
+        }
+    }
+}
+
+/// 只读内置工具（Write 模式下免审批）。
+const READ_ONLY_TOOLS: [&str; 2] = ["list_todos", "list_events"];
+
+/// 某模式下该工具是否需要人工批准。
+/// MCP 外部工具一律视为非只读（Write/All 模式均需批准）。
+pub fn requires_approval(mode: PermissionMode, tool: &str) -> bool {
+    match mode {
+        PermissionMode::Auto => false,
+        PermissionMode::All => true,
+        PermissionMode::Write => !READ_ONLY_TOOLS.contains(&tool),
+    }
+}
 
 /// 工具定义（LLM 侧元数据 + 执行元数据）。
 pub struct ToolDef {
@@ -75,6 +121,30 @@ pub fn registry() -> Vec<ToolDef> {
                     "reminder_minutes": {"type": "integer", "description": "新提醒分钟数（0=取消提醒）"}
                 },
                 "required": ["id"]
+            }),
+            requires_confirm: false,
+        },
+        ToolDef {
+            name: "delete_event",
+            description: "删除一条日程事件（软删，数据保留于库可恢复）。id 必须来自 list_events 或创建结果；删除前应先查询确认目标。",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "日程 id（必填，来自 list_events 或创建结果）"}
+                },
+                "required": ["id"]
+            }),
+            requires_confirm: false,
+        },
+        ToolDef {
+            name: "delete_events",
+            description: "批量删除多条日程事件（软删）。适合清理一批日程；ids 全部应来自 list_events 结果，删除前先查询确认。",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "ids": {"type": "array", "items": {"type": "string"}, "description": "日程 id 列表（必填，至少一个）"}
+                },
+                "required": ["ids"]
             }),
             requires_confirm: false,
         },
@@ -151,6 +221,8 @@ pub fn dispatch(db: &SqliteStorage, name: &str, args: &Value) -> Result<Value, C
         "create_todo" => create_todo(db, args)?,
         "create_event" => create_event(db, args)?,
         "update_event" => update_event(db, args)?,
+        "delete_event" => delete_event(db, args)?,
+        "delete_events" => delete_events(db, args)?,
         "list_todos" => list_todos(db, args)?,
         "list_events" => list_events(db, args)?,
         "set_todo_status" => set_todo_status(db, args)?,
@@ -260,6 +332,44 @@ fn update_event(db: &SqliteStorage, args: &Value) -> Result<Value, CoreError> {
         "recurrence": crate::model::recurrence_of(&rec),
         "reminder_minutes": crate::model::reminder_minutes_of(&rec)
     }))
+}
+
+/// 校验 id 指向一条日程（kind=event，未删）后软删；返回被删记录摘要。
+fn delete_one_event(db: &SqliteStorage, id: &str) -> Result<String, CoreError> {
+    let rec = db.get(id)?;
+    if rec.kind != crate::model::Kind::Event {
+        return Err(CoreError::Validation(format!(
+            "id {id} 不是日程（kind=todo），拒绝删除"
+        )));
+    }
+    let title = rec.title.clone();
+    service::soft_delete(db, id)?;
+    Ok(title)
+}
+
+fn delete_event(db: &SqliteStorage, args: &Value) -> Result<Value, CoreError> {
+    let id = arg_str(args, "id").ok_or_else(|| CoreError::Validation("id is required".into()))?;
+    let title = delete_one_event(db, &id)?;
+    Ok(json!({ "ok": true, "deleted": 1, "id": id, "title": title }))
+}
+
+fn delete_events(db: &SqliteStorage, args: &Value) -> Result<Value, CoreError> {
+    let ids: Vec<String> = args
+        .get("ids")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .ok_or_else(|| CoreError::Validation("ids 必须为非空字符串数组".into()))?;
+    if ids.is_empty() {
+        return Err(CoreError::Validation("ids 不能为空".into()));
+    }
+    let mut deleted = 0usize;
+    let mut failed: Vec<Value> = vec![];
+    for id in ids {
+        match delete_one_event(db, &id) {
+            Ok(_) => deleted += 1,
+            Err(e) => failed.push(json!({ "id": id, "error": e.to_string() })),
+        }
+    }
+    Ok(json!({ "ok": failed.is_empty(), "deleted": deleted, "failed": failed }))
 }
 
 fn list_todos(db: &SqliteStorage, args: &Value) -> Result<Value, CoreError> {
@@ -421,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn specs_cover_seven_tools() {
+    fn specs_cover_nine_tools() {
         let names: Vec<String> = specs().into_iter().map(|s| s.name).collect();
         assert_eq!(
             names,
@@ -429,12 +539,105 @@ mod tests {
                 "create_todo",
                 "create_event",
                 "update_event",
+                "delete_event",
+                "delete_events",
                 "list_todos",
                 "list_events",
                 "set_todo_status",
                 "add_subtask"
             ]
         );
+    }
+
+    #[test]
+    fn dispatch_delete_event_single() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let ev = dispatch(
+            &db,
+            "create_event",
+            &json!({"title": "周会", "start_at": "2026-08-16T10:00:00Z", "end_at": "2026-08-16T11:00:00Z"}),
+        )
+        .unwrap();
+        let eid = ev["id"].as_str().unwrap().to_string();
+
+        // 单删：成功并返回标题。
+        let d = dispatch(&db, "delete_event", &json!({"id": eid})).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["deleted"], 1);
+        assert_eq!(d["title"], "周会");
+
+        // 软删后列表不再可见。
+        let listed = dispatch(
+            &db,
+            "list_events",
+            &json!({"from": "2026-08-16", "to": "2026-08-17"}),
+        )
+        .unwrap();
+        assert_eq!(listed["count"], 0);
+
+        // 重复删（已删）→ NotFound 错误。
+        assert!(dispatch(&db, "delete_event", &json!({"id": eid})).is_err());
+    }
+
+    #[test]
+    fn dispatch_delete_event_rejects_todo_and_ghost() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let todo = dispatch(&db, "create_todo", &json!({"title": "待办"})).unwrap();
+        let tid = todo["id"].as_str().unwrap().to_string();
+
+        // 待办 id → 拒绝（不是日程）。
+        let err = dispatch(&db, "delete_event", &json!({"id": tid})).unwrap_err();
+        assert!(err.to_string().contains("不是日程"));
+
+        // 不存在的 id → NotFound。
+        assert!(matches!(
+            dispatch(&db, "delete_event", &json!({"id": "ghost"})).unwrap_err(),
+            CoreError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn dispatch_delete_events_batch_and_partial_failure() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let mut ids = vec![];
+        for i in 0..3 {
+            let r = dispatch(
+                &db,
+                "create_event",
+                &json!({"title": format!("事件{i}"), "start_at": "2026-08-16T10:00:00Z", "end_at": "2026-08-16T11:00:00Z"}),
+            )
+            .unwrap();
+            ids.push(r["id"].as_str().unwrap().to_string());
+        }
+
+        // 部分失败：一个真实 + 一个幽灵 + 一个待办 id → deleted=1，failed=2，ok=false。
+        let todo = dispatch(&db, "create_todo", &json!({"title": "待办"})).unwrap();
+        let tid = todo["id"].as_str().unwrap().to_string();
+        let r = dispatch(
+            &db,
+            "delete_events",
+            &json!({"ids": [ids[0], "ghost", tid]}),
+        )
+        .unwrap();
+        assert_eq!(r["ok"], false);
+        assert_eq!(r["deleted"], 1);
+        assert_eq!(r["failed"].as_array().unwrap().len(), 2);
+
+        // 全部成功：删剩余两条。
+        let r = dispatch(&db, "delete_events", &json!({"ids": [ids[1], ids[2]]})).unwrap();
+        assert_eq!(r["ok"], true);
+        assert_eq!(r["deleted"], 2);
+
+        let listed = dispatch(
+            &db,
+            "list_events",
+            &json!({"from": "2026-08-16", "to": "2026-08-17"}),
+        )
+        .unwrap();
+        assert_eq!(listed["count"], 0);
+
+        // 空 ids → 拒绝。
+        assert!(dispatch(&db, "delete_events", &json!({"ids": []})).is_err());
     }
 
     #[test]

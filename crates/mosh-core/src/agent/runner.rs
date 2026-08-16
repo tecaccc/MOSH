@@ -8,17 +8,76 @@
 
 use crate::agent::events::{AgentEvent, EndReason};
 use crate::agent::llm::{ChatMessage, LlmClient, ToolCallMsg};
-use crate::agent::tools;
+use crate::agent::mcp::{self, McpServerConfig, McpToolInfo};
+use crate::agent::skills::{skills_prompt, SkillDef};
+use crate::agent::tools::{self, PermissionMode};
 use crate::error::CoreError;
 use crate::model::now_iso;
 use crate::storage::{AgentMessage, SqliteStorage};
 use serde_json::{json, Value};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 循环步数硬上限（防发散）。
 pub const MAX_STEPS: usize = 8;
 /// 送入 LLM 的历史消息条数上限（截断防 token 膨胀）。
 pub const HISTORY_LIMIT: usize = 40;
+
+/// 一轮对话的外部增强（Skills + MCP 工具 + 审批模式）。
+/// - `skills`：启用的技能，其 prompt 追加到系统提示词；
+/// - `mcp`：已解析工具的启用服务器列表（发送前由 src-tauri 拉取 tools/list）；
+/// - `permission`：工具审批模式（Auto=全免，默认）。
+#[derive(Default)]
+pub struct TurnExtras {
+    pub skills: Vec<SkillDef>,
+    pub mcp: Vec<(McpServerConfig, Vec<McpToolInfo>)>,
+    pub permission: PermissionMode,
+}
+
+impl TurnExtras {
+    /// 全部 MCP 工具的 LLM 规格（name 已为 `mcp__…` 注册名）。
+    fn mcp_specs(&self) -> Vec<crate::agent::llm::ToolSpec> {
+        self.mcp
+            .iter()
+            .flat_map(|(_, tools)| tools.iter().map(|t| t.spec.clone()))
+            .collect()
+    }
+
+    /// 按 tool_id 找回所属服务器配置。
+    fn server_of(&self, tool_id: &str) -> Option<&McpServerConfig> {
+        self.mcp
+            .iter()
+            .find(|(_, tools)| tools.iter().any(|t| t.tool_id == tool_id))
+            .map(|(cfg, _)| cfg)
+    }
+}
+
+/// 审批闸门：审批模式下工具执行前请求人工批准（返回 false=拒绝/中止）。
+/// 由调用方注入（src-tauri 用 oneshot 通道接 Tauri 事件；单测用恒定实现）。
+pub trait ApprovalGate: Send + Sync {
+    fn request(
+        &self,
+        call_id: &str,
+        tool: &str,
+        args: &Value,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>>;
+}
+
+/// 免审批闸门（恒放行；Auto 模式/旧调用方使用）。
+#[derive(Default)]
+pub struct AutoApprove;
+
+impl ApprovalGate for AutoApprove {
+    fn request(
+        &self,
+        _call_id: &str,
+        _tool: &str,
+        _args: &Value,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        Box::pin(async { true })
+    }
+}
 
 /// 驱动一轮对话：落 user 消息 → 循环调 LLM/工具 → 落 assistant 消息。
 ///
@@ -34,6 +93,33 @@ pub async fn run_turn<C: LlmClient>(
     turn_id: &str,
     on_event: &(dyn Fn(AgentEvent) + Send + Sync),
     abort: &AtomicBool,
+) -> Result<(), CoreError> {
+    run_turn_with(
+        db,
+        client,
+        session_id,
+        user_text,
+        turn_id,
+        on_event,
+        abort,
+        &TurnExtras::default(),
+        &AutoApprove,
+    )
+    .await
+}
+
+/// [`run_turn`] 的增强版：附加 Skills 提示词、MCP 外部工具与审批闸门。
+#[allow(clippy::too_many_arguments)] // 与 run_turn 同构 + extras + gate，签名即文档
+pub async fn run_turn_with<C: LlmClient>(
+    db: &SqliteStorage,
+    client: &C,
+    session_id: &str,
+    user_text: &str,
+    turn_id: &str,
+    on_event: &(dyn Fn(AgentEvent) + Send + Sync),
+    abort: &AtomicBool,
+    extras: &TurnExtras,
+    gate: &dyn ApprovalGate,
 ) -> Result<(), CoreError> {
     on_event(AgentEvent::Start {
         session_id: session_id.to_string(),
@@ -61,8 +147,9 @@ pub async fn run_turn<C: LlmClient>(
         created_at: now_iso(),
     })?;
 
-    let mut messages = build_context(db, session_id)?;
-    let specs = tools::specs();
+    let mut messages = build_context(db, session_id, extras)?;
+    let mut specs = tools::specs();
+    specs.extend(extras.mcp_specs());
 
     // 2) 主循环。
     for _ in 0..MAX_STEPS {
@@ -93,13 +180,31 @@ pub async fn run_turn<C: LlmClient>(
             return finish(EndReason::Done, None);
         }
 
-        // 工具调用：assistant(tool_calls) 进上下文 → 逐个执行 → tool 结果回填。
+        // 工具调用：assistant(tool_calls) 进上下文 → 逐个（审批→）执行 → tool 结果回填。
         messages.push(ChatMessage::assistant_tool_calls(reply.tool_calls.clone()));
         for tc in &reply.tool_calls {
             if abort.load(Ordering::Relaxed) {
                 return finish(EndReason::Aborted, None);
             }
-            let (event, tool_msg) = exec_tool(db, session_id, turn_id, tc);
+            let args: Value =
+                serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
+            // 审批模式：需批准的工具先弹人工确认，拒绝则回填错误结果（回合继续）。
+            let approved = if tools::requires_approval(extras.permission, &tc.function.name) {
+                on_event(AgentEvent::ApprovalRequired {
+                    turn_id: turn_id.to_string(),
+                    call_id: tc.id.clone(),
+                    tool: tc.function.name.clone(),
+                    args: args.clone(),
+                });
+                gate.request(&tc.id, &tc.function.name, &args).await
+            } else {
+                true
+            };
+            let (event, tool_msg) = if approved {
+                exec_tool(db, session_id, turn_id, tc, &args, extras).await
+            } else {
+                rejected_tool(session_id, turn_id, tc, &args)
+            };
             if let Err(e) = db.append_agent_message(&tool_msg) {
                 return finish(EndReason::Error, Some(e.to_string()));
             }
@@ -117,18 +222,43 @@ pub async fn run_turn<C: LlmClient>(
     finish(EndReason::Error, Some(msg))
 }
 
-/// 执行单个工具调用：参数解析 → dispatch → 结果 JSON（失败也转 JSON 回填模型）。
+/// 执行单个工具调用（args 已解析）：`mcp__` 前缀路由到对应 MCP 服务器（HTTP）；
+/// 其余走内置注册表。失败也转 JSON 回填模型（不中断回合）。
 /// 返回 (Tool 事件, 持久化行)；事件由调用方在落库成功后发射。
-fn exec_tool(
+async fn exec_tool(
     db: &SqliteStorage,
     session_id: &str,
     turn_id: &str,
     tc: &ToolCallMsg,
+    args: &Value,
+    extras: &TurnExtras,
 ) -> (AgentEvent, AgentMessage) {
-    let args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
-    let (ok, result) = match tools::dispatch(db, &tc.function.name, &args) {
-        Ok(v) => (true, v),
-        Err(e) => (false, json!({ "ok": false, "error": e.to_string() })),
+    let name = tc.function.name.as_str();
+    let (ok, result) = if name.starts_with("mcp__") {
+        match extras.server_of(name) {
+            Some(cfg) => match mcp::parse_tool_id(name) {
+                Some((_, original)) => match mcp::call_tool(cfg, &original, args).await {
+                    Ok(v) => (
+                        true,
+                        json!({"ok": true, "server": cfg.name, "tool": original, "result": v}),
+                    ),
+                    Err(e) => (false, json!({"ok": false, "error": e})),
+                },
+                None => (
+                    false,
+                    json!({"ok": false, "error": format!("非法 MCP 工具名：{name}")}),
+                ),
+            },
+            None => (
+                false,
+                json!({"ok": false, "error": format!("MCP 工具 {name} 不在当前启用服务器中")}),
+            ),
+        }
+    } else {
+        match tools::dispatch(db, name, args) {
+            Ok(v) => (true, v),
+            Err(e) => (false, json!({ "ok": false, "error": e.to_string() })),
+        }
     };
     let event = AgentEvent::Tool {
         turn_id: turn_id.to_string(),
@@ -150,10 +280,44 @@ fn exec_tool(
     (event, row)
 }
 
-/// 重建 LLM 上下文：system（含当前时间）+ 历史 user/assistant 行（跳过 tool 行）。
-fn build_context(db: &SqliteStorage, session_id: &str) -> Result<Vec<ChatMessage>, CoreError> {
+/// 用户拒绝审批的工具调用：回填 ok:false 结果（模型可见、可换方案），同样落库发卡片。
+fn rejected_tool(
+    session_id: &str,
+    turn_id: &str,
+    tc: &ToolCallMsg,
+    args: &Value,
+) -> (AgentEvent, AgentMessage) {
+    let result = json!({ "ok": false, "error": "用户拒绝了本次工具调用" });
+    let event = AgentEvent::Tool {
+        turn_id: turn_id.to_string(),
+        tool: tc.function.name.clone(),
+        args: args.clone(),
+        ok: false,
+        result: result.clone(),
+    };
+    let row = AgentMessage {
+        id: 0,
+        session_id: session_id.to_string(),
+        role: "tool".into(),
+        content: String::new(),
+        tool_name: Some(tc.function.name.clone()),
+        tool_args: Some(tc.function.arguments.clone()),
+        tool_result: Some(result.to_string()),
+        created_at: now_iso(),
+    };
+    (event, row)
+}
+
+/// 重建 LLM 上下文：system（含当前时间 + 启用技能）+ 历史 user/assistant 行（跳过 tool 行）。
+fn build_context(
+    db: &SqliteStorage,
+    session_id: &str,
+    extras: &TurnExtras,
+) -> Result<Vec<ChatMessage>, CoreError> {
     let history = db.list_agent_messages(session_id)?;
-    let mut msgs = vec![ChatMessage::system(system_prompt())];
+    let mut msgs = vec![ChatMessage::system(system_prompt(
+        skills_prompt(&extras.skills).as_deref(),
+    ))];
     for row in history.iter().rev().take(HISTORY_LIMIT).rev() {
         let m = match row.role.as_str() {
             "user" => ChatMessage::user(&row.content),
@@ -165,12 +329,12 @@ fn build_context(db: &SqliteStorage, session_id: &str) -> Result<Vec<ChatMessage
     Ok(msgs)
 }
 
-/// 系统提示词：注入当前本地日期/时间/星期（相对日期解析的锚点）+ 工具守则。
-fn system_prompt() -> String {
+/// 系统提示词：注入当前本地日期/时间/星期（相对日期解析的锚点）+ 工具守则 + 启用技能。
+fn system_prompt(skills: Option<&str>) -> String {
     let now = chrono::Local::now();
     let wd = ["一", "二", "三", "四", "五", "六", "日"]
         [now.format("%u").to_string().parse::<usize>().unwrap_or(1) - 1];
-    format!(
+    let mut p = format!(
         "你是 MOSH（本地个人信息管理应用）的内置助手，帮用户管理待办与日程。\n\
          当前本地时间：{}（星期{}，时区 {}）。\n\n\
          规则：\n\
@@ -178,13 +342,17 @@ fn system_prompt() -> String {
          2. 创建/修改成功后，用一两句话向用户复述结果（标题与时间）。\n\
          3. 调用工具时用经过校验的参数：id 只能来自工具结果，不要编造。\n\
          4. 查询类请求先调 list_todos / list_events，再基于结果回答，不要臆造数据。\n\
-         5. 修改已有日程用 update_event（只需传要改的字段）；你没有删除工具，用户要求删除时说明请在应用内手动操作。\n\
+         5. 修改已有日程用 update_event（只需传要改的字段）；删除日程用 delete_event（单条）或 delete_events（批量）：id 必须来自 list_events 或创建结果，删除前先查询确认目标，删除后向用户复述删了什么；不确定时先列出候选向用户确认再删。\n\
          6. 周期事件可用 recurrence（daily/weekly/monthly/yearly）；提醒用 reminder_minutes（提前分钟数）。\n\
          7. 用户意图不清（如缺时间、标题不明）时，先追问再创建。",
         now.format("%Y-%m-%d %H:%M"),
         wd,
         now.format("%:z"),
-    )
+    );
+    if let Some(s) = skills {
+        p.push_str(s);
+    }
+    p
 }
 
 fn persist_text(db: &SqliteStorage, session_id: &str, content: &str) -> Result<(), CoreError> {
@@ -270,6 +438,7 @@ mod tests {
                 AgentEvent::Start { .. } => "start".to_string(),
                 AgentEvent::Delta { text, .. } => format!("delta:{text}"),
                 AgentEvent::Tool { tool, ok, .. } => format!("tool:{tool}:ok={ok}"),
+                AgentEvent::ApprovalRequired { tool, .. } => format!("approval:{tool}"),
                 AgentEvent::End { reason, .. } => format!("end:{:?}", reason),
             };
             l2.lock().unwrap().push(tag);
@@ -435,7 +604,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_prompt_contains_datetime() {
-        let p = system_prompt();
+        let p = system_prompt(None);
         assert!(p.contains("当前本地时间"));
         assert!(p.contains("星期"));
         assert!(p.contains("时区"));
@@ -457,11 +626,169 @@ mod tests {
             })
             .unwrap();
         }
-        let ctx = build_context(&db, "s").unwrap();
+        let ctx = build_context(&db, "s", &TurnExtras::default()).unwrap();
         assert_eq!(ctx.len(), 3); // system + user + assistant
         assert_eq!(ctx[0].role, "system");
         assert_eq!(ctx[1].content.as_deref(), Some("q1"));
         assert_eq!(ctx[2].content.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn build_context_appends_skills_prompt() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let extras = TurnExtras {
+            skills: vec![crate::agent::skills::SkillDef {
+                id: "planner".into(),
+                name: "日程规划师".into(),
+                description: String::new(),
+                prompt: "拆解目标并落成日程".into(),
+                builtin: true,
+            }],
+            mcp: vec![],
+            ..Default::default()
+        };
+        let ctx = build_context(&db, "s", &extras).unwrap();
+        let sys = ctx[0].content.as_deref().unwrap();
+        assert!(sys.contains("技能已启用"));
+        assert!(sys.contains("日程规划师"));
+        assert!(sys.contains("拆解目标并落成日程"));
+        // 无技能时不追加。
+        let plain = build_context(&db, "s", &TurnExtras::default()).unwrap();
+        assert!(!plain[0].content.as_deref().unwrap().contains("技能已启用"));
+    }
+
+    #[test]
+    fn turn_extras_mcp_specs_and_lookup() {
+        let cfg = mcp::McpServerConfig {
+            id: "srv".into(),
+            name: "演示".into(),
+            url: "http://x/mcp".into(),
+            token: None,
+            enabled: true,
+        };
+        let infos = mcp::to_tool_infos(&cfg, &[json!({"name": "search", "description": "搜索"})]);
+        let extras = TurnExtras {
+            skills: vec![],
+            mcp: vec![(cfg, infos)],
+            ..Default::default()
+        };
+        let specs = extras.mcp_specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "mcp__srv__search");
+        assert!(extras.server_of("mcp__srv__search").is_some());
+        assert!(extras.server_of("mcp__other__search").is_none());
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_not_in_servers_feeds_error() {
+        // 模型调用未启用的 MCP 工具 → ok:false 回填（不中断回合）。
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let mock = MockLlm::new(vec![
+            Reply {
+                content: "该外部工具不可用。".into(),
+                tool_calls: vec![],
+            },
+            Reply {
+                content: String::new(),
+                tool_calls: vec![tc("c1", "mcp__ghost__search", json!({"q": "x"}))],
+            },
+        ]);
+        let (log, on_event) = collector();
+        run_turn_with(
+            &db,
+            &mock,
+            "s1",
+            "搜一下",
+            "t1",
+            &on_event,
+            &AtomicBool::new(false),
+            &TurnExtras::default(),
+            &AutoApprove,
+        )
+        .await
+        .unwrap();
+        let log = log.lock().unwrap();
+        assert!(log.contains(&"tool:mcp__ghost__search:ok=false".to_string()));
+        assert_eq!(log.last().unwrap(), "end:Done");
+    }
+
+    /// 恒拒绝闸门（审批测试用）。
+    struct DenyGate;
+
+    impl crate::agent::ApprovalGate for DenyGate {
+        fn request(
+            &self,
+            _c: &str,
+            _t: &str,
+            _a: &Value,
+        ) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+            Box::pin(async { false })
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_denied_feeds_error_and_skips_exec() {
+        // 全部审批模式下拒绝 create_todo：先发 ApprovalRequired，再回填 ok:false，
+        // 工具不真实落库，回合照常 Done。
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let mock = MockLlm::new(vec![
+            Reply {
+                content: "好的，已取消创建。".into(),
+                tool_calls: vec![],
+            },
+            Reply {
+                content: String::new(),
+                tool_calls: vec![tc("c1", "create_todo", json!({"title": "x"}))],
+            },
+        ]);
+        let (log, on_event) = collector();
+        let extras = TurnExtras {
+            permission: crate::agent::tools::PermissionMode::All,
+            ..Default::default()
+        };
+        run_turn_with(
+            &db,
+            &mock,
+            "s1",
+            "建个待办",
+            "t1",
+            &on_event,
+            &AtomicBool::new(false),
+            &extras,
+            &DenyGate,
+        )
+        .await
+        .unwrap();
+        let log = log.lock().unwrap();
+        assert!(log.contains(&"approval:create_todo".to_string()));
+        assert!(log.contains(&"tool:create_todo:ok=false".to_string()));
+        assert_eq!(log.last().unwrap(), "end:Done");
+        drop(log);
+        // 拒绝 → 未真实创建。
+        let todos = service::list_todos(&db, Default::default()).unwrap();
+        assert!(todos.is_empty());
+        // 拒绝结果回填给模型。
+        let saw = mock.saw_tool_results.lock().unwrap()[0].clone();
+        let v: Value = serde_json::from_str(&saw).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].as_str().unwrap().contains("拒绝"));
+    }
+
+    #[test]
+    fn requires_approval_covers_modes() {
+        use crate::agent::tools::{requires_approval, PermissionMode as M};
+        // Auto：全部放行。
+        assert!(!requires_approval(M::Auto, "delete_event"));
+        // All：全部需批。
+        assert!(requires_approval(M::All, "list_todos"));
+        // Write：只读放行，写/删/MCP 需批。
+        assert!(!requires_approval(M::Write, "list_todos"));
+        assert!(!requires_approval(M::Write, "list_events"));
+        assert!(requires_approval(M::Write, "create_todo"));
+        assert!(requires_approval(M::Write, "update_event"));
+        assert!(requires_approval(M::Write, "delete_event"));
+        assert!(requires_approval(M::Write, "set_todo_status"));
+        assert!(requires_approval(M::Write, "mcp__srv__search"));
     }
 
     #[tokio::test]

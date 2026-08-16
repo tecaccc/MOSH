@@ -315,6 +315,16 @@ impl SqliteStorage {
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
+    /// 删除整个会话（全部消息行）；返回删除行数。
+    pub fn delete_agent_session(&self, session_id: &str) -> Result<usize, CoreError> {
+        let conn = self.lock()?;
+        let n = conn.execute(
+            "DELETE FROM agent_messages WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(n)
+    }
+
     /// 会话摘要（最近活跃在前）。标题取首条 user 消息截断。
     pub fn list_agent_sessions(&self) -> Result<Vec<AgentSessionSummary>, CoreError> {
         let conn = self.lock()?;
@@ -728,6 +738,29 @@ mod tests {
         assert!(sessions[0].title.ends_with("…"));
         assert_eq!(sessions[0].message_count, 1);
         assert_eq!(sessions[1].title, "明早十点开周会");
+    }
+
+    #[test]
+    fn delete_agent_session_removes_only_target() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.append_agent_message(&agent_msg("s1", "user", "a"))
+            .unwrap();
+        db.append_agent_message(&agent_msg("s1", "assistant", "b"))
+            .unwrap();
+        db.append_agent_message(&agent_msg("s2", "user", "c"))
+            .unwrap();
+
+        let n = db.delete_agent_session("s1").unwrap();
+        assert_eq!(n, 2);
+        assert!(db.list_agent_messages("s1").unwrap().is_empty());
+        // 其他会话不受影响。
+        assert_eq!(db.list_agent_messages("s2").unwrap().len(), 1);
+        let sessions = db.list_agent_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "s2");
+
+        // 重复删除 → 0 行，不报错。
+        assert_eq!(db.delete_agent_session("s1").unwrap(), 0);
     }
 
     #[test]

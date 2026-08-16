@@ -10,9 +10,14 @@
 
 pub mod events;
 pub mod llm;
+pub mod mcp;
 pub mod runner;
+pub mod skills;
 pub mod tools;
 
 pub use events::{AgentEvent, EndReason};
 pub use llm::{AiConfig, ChatMessage, LlmClient, OpenAiClient, Reply, ToolCallMsg, ToolSpec};
-pub use runner::{run_turn, MAX_STEPS};
+pub use mcp::McpServerConfig;
+pub use runner::{run_turn, run_turn_with, ApprovalGate, AutoApprove, TurnExtras, MAX_STEPS};
+pub use skills::SkillDef;
+pub use tools::{requires_approval, PermissionMode};

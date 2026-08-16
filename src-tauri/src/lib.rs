@@ -5,7 +5,7 @@
 //! 把 `CoreError` 转成前端可读字符串。`State<SqliteStorage>` 在 `setup`
 //! 中由 `app_data_dir/mosh.sqlite` 打开并注入。
 
-use mosh_core::agent::{self, AgentEvent, AiConfig, LlmClient};
+use mosh_core::agent::{self, AgentEvent, AiConfig, LlmClient, McpServerConfig, SkillDef, TurnExtras};
 use mosh_core::model::{EventInput, Record, RecordFilter, RecordPatch, Status, TodoInput};
 use mosh_core::service;
 use mosh_core::storage::{AgentMessage, AgentSessionSummary, SqliteStorage};
@@ -226,9 +226,55 @@ struct AgentRun {
     running: bool,
 }
 
-/// 全部会话运行态（setup 注入）。
+/// 全部会话运行态（setup 注入）：
+/// - `runs`：会话占用与中止标志；
+/// - `pending`：待审批工具调用的 oneshot 回传通道（call_id → sender），
+///   `agent_approve` 命令弹出并投递用户决定。
 #[derive(Default)]
-struct AgentRuns(Mutex<HashMap<String, AgentRun>>);
+struct AgentRuns {
+    runs: Mutex<HashMap<String, AgentRun>>,
+    pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+}
+
+/// 审批闸门（会话级）：注册 oneshot 等待前端决定；中止时轮询 abort 标志退出。
+struct SessionGate {
+    pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    abort: Arc<AtomicBool>,
+}
+
+impl agent::ApprovalGate for SessionGate {
+    fn request(
+        &self,
+        call_id: &str,
+        _tool: &str,
+        _args: &serde_json::Value,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = bool> + Send + '_>,
+    > {
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        if let Ok(mut map) = self.pending.lock() {
+            map.insert(call_id.to_string(), tx);
+        }
+        let pending = self.pending.clone();
+        let abort = self.abort.clone();
+        let key = call_id.to_string();
+        Box::pin(async move {
+            loop {
+                tokio::select! {
+                    res = &mut rx => return res.unwrap_or(false),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                        if abort.load(Ordering::Relaxed) {
+                            if let Ok(mut map) = pending.lock() {
+                                map.remove(&key);
+                            }
+                            return false;
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
 
 /// 读 AI 模型配置；未配置返回可读错误（前端引导去设置页）。
 fn load_ai_config(state: &SqliteStorage) -> Result<AiConfig, String> {
@@ -268,7 +314,7 @@ async fn agent_send(
 
     // 登记/占用会话运行槽：同会话同时在跑 → 拒绝。
     let abort = {
-        let mut map = runs.0.lock().map_err(|e| e.to_string())?;
+        let mut map = runs.runs.lock().map_err(|e| e.to_string())?;
         match map.get_mut(&session_id) {
             Some(run) if run.running => {
                 return Err("该会话正在回复中，请稍候或先停止".to_string());
@@ -294,19 +340,59 @@ async fn agent_send(
 
     let turn_id = mosh_core::model::new_id();
     let client = agent::OpenAiClient::new(&cfg);
+
+    // 装载本轮增强：启用技能 + 启用的 MCP 服务器工具（单台失败跳过不阻塞）+ 审批模式。
+    let extras = {
+        let skills = skills_inner(&state)
+            .into_iter()
+            .filter(|s| s.active)
+            .map(|s| s.def)
+            .collect::<Vec<_>>();
+        let mut mcp = Vec::new();
+        for srv in load_mcp_servers(&state).into_iter().filter(|s| s.enabled) {
+            match agent::mcp::list_tools(&srv).await {
+                Ok(raw) => {
+                    let tools = agent::mcp::to_tool_infos(&srv, &raw);
+                    eprintln!("[mcp] {} 装载 {} 个工具", srv.name, tools.len());
+                    mcp.push((srv, tools));
+                }
+                Err(e) => eprintln!("[mcp] {} 装载失败（跳过）：{e}", srv.name),
+            }
+        }
+        let permission = agent::PermissionMode::parse(
+            &state
+                .get_setting("ai_permission_mode")
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        );
+        TurnExtras {
+            skills,
+            mcp,
+            permission,
+        }
+    };
+
     let app_for_events = app.clone();
     let on_event = move |e: AgentEvent| {
         let name = match &e {
             AgentEvent::Start { .. } => "agent://start",
             AgentEvent::Delta { .. } => "agent://delta",
             AgentEvent::Tool { .. } => "agent://tool",
+            AgentEvent::ApprovalRequired { .. } => "agent://approval",
             AgentEvent::End { .. } => "agent://end",
         };
         let _ = app_for_events.emit(name, &e);
     };
 
+    // 审批闸门：接前端 agent_approve；中止时轮询退出。
+    let gate = SessionGate {
+        pending: runs.pending.clone(),
+        abort: abort.clone(),
+    };
+
     // run_turn 内部已保证 End 事件恰好一次（含错误/中断），此处 Err 仅日志级。
-    let result = agent::run_turn(
+    let result = agent::run_turn_with(
         &state,
         &client,
         &session_id,
@@ -314,6 +400,8 @@ async fn agent_send(
         &turn_id,
         &on_event,
         &abort,
+        &extras,
+        &gate,
     )
     .await;
 
@@ -321,7 +409,7 @@ async fn agent_send(
         eprintln!("[agent] turn {turn_id} storage failure: {e}");
     }
     // 释放运行槽。
-    if let Ok(mut map) = runs.0.lock() {
+    if let Ok(mut map) = runs.runs.lock() {
         if let Some(run) = map.get_mut(&session_id) {
             run.running = false;
         }
@@ -332,11 +420,49 @@ async fn agent_send(
 /// 中止某会话的在迷轮（步/工具边界检查，已落库操作保留）。
 #[tauri::command]
 fn agent_abort(session_id: String, runs: State<'_, AgentRuns>) -> Result<(), String> {
-    let map = runs.0.lock().map_err(|e| e.to_string())?;
+    let map = runs.runs.lock().map_err(|e| e.to_string())?;
     if let Some(run) = map.get(&session_id) {
         run.abort.store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// 审批回传：用户对某待批准工具调用的决定（true=批准执行）。
+#[tauri::command]
+fn agent_approve(
+    call_id: String,
+    approved: bool,
+    runs: State<'_, AgentRuns>,
+) -> Result<(), String> {
+    let mut pending = runs.pending.lock().map_err(|e| e.to_string())?;
+    if let Some(tx) = pending.remove(&call_id) {
+        let _ = tx.send(approved);
+        Ok(())
+    } else {
+        // 通道已失效（回合结束/中止）——静默即可，前端也会随 end 事件清理。
+        Ok(())
+    }
+}
+
+/// 读工具审批模式（settings `ai_permission_mode`；缺省 auto）。
+#[tauri::command]
+fn get_permission_mode(state: State<'_, SqliteStorage>) -> Result<String, String> {
+    Ok(state
+        .get_setting("ai_permission_mode")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "auto".to_string()))
+}
+
+/// 写工具审批模式（auto/write/all；非法值拒绝）。
+#[tauri::command]
+fn set_permission_mode(mode: String, state: State<'_, SqliteStorage>) -> Result<(), String> {
+    let m = agent::PermissionMode::parse(&mode);
+    if m.as_str() != mode.trim() {
+        return Err("模式仅支持 auto / write / all".to_string());
+    }
+    state
+        .set_setting("ai_permission_mode", m.as_str())
+        .map_err(|e| e.to_string())
 }
 
 /// 读 AI 模型配置（未配置返回 null）。
@@ -514,6 +640,219 @@ fn list_agent_messages(
     state.list_agent_messages(&session_id).map_err(|e| e.to_string())
 }
 
+/// 删除整个会话（含全部消息行）。
+#[tauri::command]
+fn delete_agent_session(
+    state: State<'_, SqliteStorage>,
+    session_id: String,
+) -> Result<(), String> {
+    state
+        .delete_agent_session(&session_id)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+// —— Skills：内置 + 自定义（settings `ai_skills_custom`）+ 启用集（`ai_skills_active`）——
+
+/// 技能 + 启用状态（聊天工具条/设置页共用）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+struct SkillInfo {
+    #[serde(flatten)]
+    def: SkillDef,
+    active: bool,
+}
+
+fn load_setting_json<T: serde::de::DeserializeOwned>(
+    state: &SqliteStorage,
+    key: &str,
+) -> Result<T, String> {
+    let json = state.get_setting(key).map_err(|e| e.to_string())?;
+    json.as_deref()
+        .filter(|s| !s.is_empty())
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("setting {key} 未设置"))
+}
+
+fn save_setting_value<T: serde::Serialize>(
+    state: &SqliteStorage,
+    key: &str,
+    value: &T,
+) -> Result<(), String> {
+    let serialized = serde_json::to_string(value).map_err(|e| e.to_string())?;
+    state.set_setting(key, &serialized).map_err(|e| e.to_string())
+}
+
+fn load_custom_skills(state: &SqliteStorage) -> Vec<SkillDef> {
+    load_setting_json::<Vec<SkillDef>>(state, "ai_skills_custom").unwrap_or_default()
+}
+
+fn load_active_skill_ids(state: &SqliteStorage) -> Vec<String> {
+    load_setting_json::<Vec<String>>(state, "ai_skills_active").unwrap_or_default()
+}
+
+/// 内置 + 自定义 + 启用状态（命令与 agent_send 共用）。
+fn skills_inner(state: &SqliteStorage) -> Vec<SkillInfo> {
+    let active = load_active_skill_ids(state);
+    let mut defs = agent::skills::builtin_skills();
+    defs.extend(load_custom_skills(state));
+    defs.into_iter()
+        .map(|def| {
+            let active = active.contains(&def.id);
+            SkillInfo { def, active }
+        })
+        .collect()
+}
+
+/// 全部技能（内置在前）+ 各自启用状态。
+#[tauri::command]
+fn list_skills(state: State<'_, SqliteStorage>) -> Result<Vec<SkillInfo>, String> {
+    Ok(skills_inner(&state))
+}
+
+/// 新建/更新自定义技能（内置 id 拒绝，防覆盖）。
+#[tauri::command]
+fn save_skill(mut skill: SkillDef, state: State<'_, SqliteStorage>) -> Result<SkillDef, String> {
+    skill.name = skill.name.trim().to_string();
+    skill.prompt = skill.prompt.trim().to_string();
+    if skill.name.is_empty() || skill.prompt.is_empty() {
+        return Err("技能名称与提示词不能为空".to_string());
+    }
+    let builtin_ids: Vec<String> = agent::skills::builtin_skills()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    if skill.builtin || builtin_ids.contains(&skill.id) {
+        return Err("内置技能不可编辑，请新建自定义技能".to_string());
+    }
+    if skill.id.is_empty() {
+        skill.id = mosh_core::model::new_id();
+    }
+    let mut customs = load_custom_skills(&state);
+    match customs.iter_mut().find(|s| s.id == skill.id) {
+        Some(slot) => *slot = skill.clone(),
+        None => customs.push(skill.clone()),
+    }
+    save_setting_value(&state, "ai_skills_custom", &customs)?;
+    Ok(skill)
+}
+
+/// 删除自定义技能（内置拒绝；同步满理启用集）。
+#[tauri::command]
+fn delete_skill(id: String, state: State<'_, SqliteStorage>) -> Result<(), String> {
+    let builtin_ids: Vec<String> = agent::skills::builtin_skills()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    if builtin_ids.contains(&id) {
+        return Err("内置技能不可删除".to_string());
+    }
+    let mut customs = load_custom_skills(&state);
+    let before = customs.len();
+    customs.retain(|s| s.id != id);
+    if customs.len() == before {
+        return Err("技能不存在".to_string());
+    }
+    save_setting_value(&state, "ai_skills_custom", &customs)?;
+    let mut active = load_active_skill_ids(&state);
+    active.retain(|x| x != &id);
+    save_setting_value(&state, "ai_skills_active", &active)?;
+    Ok(())
+}
+
+/// 开/关技能（内置与自定义通用）。
+#[tauri::command]
+fn set_skill_active(id: String, active: bool, state: State<'_, SqliteStorage>) -> Result<(), String> {
+    let mut ids = load_active_skill_ids(&state);
+    if active {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    } else {
+        ids.retain(|x| x != &id);
+    }
+    save_setting_value(&state, "ai_skills_active", &ids)
+}
+
+// —— MCP 服务器（settings `ai_mcp_servers`）——
+
+fn load_mcp_servers(state: &SqliteStorage) -> Vec<McpServerConfig> {
+    load_setting_json::<Vec<McpServerConfig>>(state, "ai_mcp_servers").unwrap_or_default()
+}
+
+#[tauri::command]
+fn list_mcp_servers(state: State<'_, SqliteStorage>) -> Result<Vec<McpServerConfig>, String> {
+    Ok(load_mcp_servers(&state))
+}
+
+/// 新建/更新服务器配置（按 id upsert）。
+#[tauri::command]
+fn save_mcp_server(
+    mut server: McpServerConfig,
+    state: State<'_, SqliteStorage>,
+) -> Result<McpServerConfig, String> {
+    server.name = server.name.trim().to_string();
+    server.url = server.url.trim().trim_end_matches('/').to_string();
+    if server.name.is_empty() {
+        return Err("服务器名称不能为空".to_string());
+    }
+    if !server.url.starts_with("http://") && !server.url.starts_with("https://") {
+        return Err("地址需为 http(s):// 开头的 MCP 端点".to_string());
+    }
+    if server.id.is_empty() {
+        server.id = mosh_core::model::new_id();
+    }
+    let mut servers = load_mcp_servers(&state);
+    match servers.iter_mut().find(|s| s.id == server.id) {
+        Some(slot) => *slot = server.clone(),
+        None => servers.push(server.clone()),
+    }
+    save_setting_value(&state, "ai_mcp_servers", &servers)?;
+    Ok(server)
+}
+
+#[tauri::command]
+fn delete_mcp_server(id: String, state: State<'_, SqliteStorage>) -> Result<(), String> {
+    let mut servers = load_mcp_servers(&state);
+    let before = servers.len();
+    servers.retain(|s| s.id != id);
+    if servers.len() == before {
+        return Err("服务器不存在".to_string());
+    }
+    save_setting_value(&state, "ai_mcp_servers", &servers)
+}
+
+/// 总开关（聊天工具条快速启停）。
+#[tauri::command]
+fn set_mcp_enabled(id: String, enabled: bool, state: State<'_, SqliteStorage>) -> Result<(), String> {
+    let mut servers = load_mcp_servers(&state);
+    let slot = servers
+        .iter_mut()
+        .find(|s| s.id == id)
+        .ok_or("服务器不存在")?;
+    slot.enabled = enabled;
+    save_setting_value(&state, "ai_mcp_servers", &servers)
+}
+
+/// 探测：连接并列出工具名（设置页“测试连接”用）。
+#[tauri::command]
+async fn mcp_list_tools(base_url: String, token: Option<String>) -> Result<Vec<String>, String> {
+    let cfg = McpServerConfig {
+        id: "probe".into(),
+        name: "probe".into(),
+        url: base_url,
+        token,
+        enabled: true,
+    };
+    let tools = agent::mcp::list_tools(&cfg).await?;
+    Ok(tools
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
+        .collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -552,6 +891,9 @@ pub fn run() {
             get_current_weather,
             agent_send,
             agent_abort,
+            agent_approve,
+            get_permission_mode,
+            set_permission_mode,
             get_ai_config,
             set_ai_config,
             list_ai_providers,
@@ -560,7 +902,17 @@ pub fn run() {
             list_ai_models,
             test_ai_connection,
             list_agent_sessions,
-            list_agent_messages
+            list_agent_messages,
+            delete_agent_session,
+            list_skills,
+            save_skill,
+            delete_skill,
+            set_skill_active,
+            list_mcp_servers,
+            save_mcp_server,
+            delete_mcp_server,
+            set_mcp_enabled,
+            mcp_list_tools
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

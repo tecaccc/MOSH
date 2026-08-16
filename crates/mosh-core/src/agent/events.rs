@@ -20,6 +20,15 @@ pub enum AgentEvent {
         ok: bool,
         result: Value,
     },
+    /// 工具待人工批准（审批模式下）：前端弹批准栏，用户决定经
+    /// `agent_approve` 命令回传；随后仍会收到对应 Tool 事件。
+    ApprovalRequired {
+        turn_id: String,
+        /// 对应 LLM tool_call 的 id（批准回传的键）。
+        call_id: String,
+        tool: String,
+        args: Value,
+    },
     /// 一轮结束（done / aborted / error）。
     End {
         turn_id: String,
