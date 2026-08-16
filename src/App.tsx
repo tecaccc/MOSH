@@ -11,8 +11,10 @@ import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
 import TodoEditor from "./components/TodoEditor";
 import TodayView from "./components/TodayView";
+import UpdaterToast from "./components/UpdaterToast";
 import { editingEventOf, useCalendarStore } from "./state/calendar";
 import { selectedRecordOf, useAppStore } from "./state/store";
+import { useUpdaterStore } from "./state/updater";
 import styles from "./App.module.css";
 
 /**
@@ -36,6 +38,14 @@ export default function App() {
       setLoadError(e instanceof Error ? e.message : String(e));
     });
   }, [loadTodos]);
+
+  // 启动后静默检查一次更新（延迟 8s 避免抢占启动资源；无更新/失败不打扰）。
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void useUpdaterStore.getState().check({ silent: true });
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const calEditing = editingEventOf(calEvents, editingId) !== undefined;
   const editingEvent = editingEventOf(calEvents, editingId) ?? null;
@@ -89,6 +99,7 @@ export default function App() {
       <DialogHost />
 
       <ReminderToast />
+      <UpdaterToast />
     </div>
   );
 }

@@ -26,6 +26,7 @@ import { WEATHER_ICONS, weatherInfo, type WeatherIcon } from "../lib/weather-cod
 import type { AiConfig } from "../lib/types";
 import { useAgentStore } from "../state/agent";
 import { useAppStore, type SettingsSection } from "../state/store";
+import { useUpdaterStore } from "../state/updater";
 import { useWeatherStore } from "../state/weather";
 import styles from "./SettingsView.module.css";
 
@@ -376,6 +377,7 @@ export default function SettingsView() {
   const [appVersion, setAppVersion] = useState("");
   const [tauriVersion, setTauriVersion] = useState("");
   const [platform, setPlatform] = useState("");
+  const updaterPhase = useUpdaterStore((s) => s.phase);
 
   async function loadAbout() {
     setPlatform(
@@ -396,6 +398,16 @@ export default function SettingsView() {
     } catch {
       setAppVersion(__APP_VERSION__);
     }
+  }
+
+  // 手动检查更新：结果仅 toast 反馈（有新版本时另弹右下角 UpdaterToast）。
+  async function onCheckUpdate() {
+    await useUpdaterStore.getState().check();
+    const { phase, info } = useUpdaterStore.getState();
+    if (phase === "upToDate") showToast(true, "已是最新版本 ✨");
+    else if (phase === "error") showToast(false, "检查更新失败，请稍后重试");
+    else if (phase === "available" && info)
+      showToast(true, `发现新版本 v${info.version}，可在右下角通知中更新`);
   }
 
   // 当前表单名称对应的提供商图标（输入 DeepSeek 即时亮起）；模型列表同用。
@@ -944,6 +956,26 @@ export default function SettingsView() {
                     <span className={styles["about-k"]}>运行平台</span>
                     <span className={styles["about-v"]}>{platform || "—"}</span>
                   </div>
+                </div>
+              </div>
+
+              {/* 软件更新：手动检查（启动后也会自动静默检查一次） */}
+              <div className={styles.sgroup}>
+                <div className={styles["update-row"]}>
+                  <div>
+                    <div className={styles["update-title"]}>软件更新</div>
+                    <div className={styles["update-desc"]}>
+                      检测 GitHub Release 新版本，确认后自动下载安装并重启。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className={`${styles["ai-btn"]} ${styles.primary}`}
+                    onClick={() => void onCheckUpdate()}
+                    disabled={updaterPhase === "checking"}
+                  >
+                    {updaterPhase === "checking" ? "检查中…" : "检查更新"}
+                  </button>
                 </div>
               </div>
             </div>

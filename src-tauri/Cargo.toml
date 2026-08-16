@@ -25,3 +25,6 @@ chrono = { workspace = true }
 mosh-core = { path = "../crates/mosh-core" }
 # 审批闸门的 oneshot 通道与等待超时轮询（select! 宏需 macros；运行时由 tauri::async_runtime 提供）。
 tokio = { version = "1", features = ["sync", "time", "macros"] }
+# 自动更新：检测 GitHub Release 新版本并下载安装（process 提供 relaunch 重启）。
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"

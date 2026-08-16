@@ -79,6 +79,8 @@ npm run tauri build        # 产物：target/release/mosh
 
 用 `x86_64-pc-windows-gnu` + MinGW，**无需 cargo-xwin / Windows SDK 下载**。验证于 2026-08-13。
 
+> **分发形态已变更（2026-08-16）**：Windows 正式分发为 **NSIS 安装包**（`mosh_x.y.z_x64-setup.exe`，简中/英文），由 Release CI 在原生 Windows runner 上自动构建并附 `.sig` 签名（供应用内自动更新），从 GitHub Release 页下载，详见 `docs/release.md`。本节交叉编译仅用于**开发期快速验证 / 自用调试**，产物不再对外分发。
+
 ### 一次性准备
 
 ```bash
@@ -95,7 +97,7 @@ sudo dnf install mingw64-gcc     # 提供 x86_64-w64-mingw32-{gcc,windres,ar,ld}
 x86_64-w64-mingw32-gcc --version
 ```
 
-### 编译
+### 编译（开发验证用，裸 exe）
 
 仓库根目录执行：
 
@@ -107,10 +109,10 @@ npm run tauri build -- --no-bundle --target x86_64-pc-windows-gnu
 说明：
 
 - `tauri build` 会先自动跑 `beforeBuildCommand`（即 `npm run build`）出前端到 `build/`，再做交叉编译；无需手动先 build。
-- `--no-bundle`：跳过 `.msi` / `.nsis` 安装包（需 WiX / NSIS，本机一般没有），只出裸 `.exe` + 伴生 DLL。
+- `--no-bundle`：只出裸 `.exe` + 伴生 DLL（本地无 wine/makensis.exe 时交叉打不了安装包）。
 - 首次 release 全量交叉编译约 5 分钟，之后增量很快。
 
-### 产物
+产物：
 
 ```
 target/x86_64-pc-windows-gnu/release/
@@ -118,19 +120,14 @@ target/x86_64-pc-windows-gnu/release/
   WebView2Loader.dll     ~160 KB，webview2-com-sys vendored 加载器
 ```
 
-### ⚠️ 分发必读
+⚠️ 自用运行须把 `mosh.exe` 与 `WebView2Loader.dll` 放在同一目录（这是 WebView2 的**加载器**，非运行时本体；后者 Win10 1809+ / Win11 已预装）。
 
-`mosh.exe` 静态依赖**同目录**的 `WebView2Loader.dll`。注意：这是 WebView2 的**加载器**（loader），**不是** WebView2 运行时本体——后者 Win10 1809+ / Win11 已预装。由于 `--no-bundle` 不打安装包，**分发时必须把 `mosh.exe` 与 `WebView2Loader.dll` 放在同一目录**，否则 Windows 启动时报「找不到 WebView2Loader.dll」。
+### Windows 安装包（正式分发）
 
-约定分发暂存目录（`dist/` 已在 `.gitignore`）：
-
-```bash
-mkdir -p dist/windows
-cp target/x86_64-pc-windows-gnu/release/mosh.exe            dist/windows/
-cp target/x86_64-pc-windows-gnu/release/WebView2Loader.dll  dist/windows/
-```
-
-> 长期面向终端用户分发，需用 WiX / NSIS 打 `.msi` / `.exe` 安装包（把 exe + DLL 装进安装目录）。
+- **CI 产出（推荐）**：推 `v*` 标签触发 `.github/workflows/release.yml`，原生 Windows runner 构建后 Release 页可得 `mosh_x.y.z_x64-setup.exe` + `.sig`。
+- **Windows 机器本地**：`npm run tauri build` 原生产出 `src-tauri/target/release/bundle/nsis/`（如需 `.msi` 亦可，默认英文）。
+- Linux 交叉打 NSIS 需额外装 wine + `makensis.exe`，Tauri CLI 对此仅实验性支持，不推荐。
+- 安装包配置（`tauri.conf.json → bundle.windows.nsis`）：`installMode: both`（可选仅当前用户/所有用户）、`SimpChinese`/`English` 双语（跟随系统语言）。
 
 ### 仅验证命令层能否编译（不出 .exe）
 

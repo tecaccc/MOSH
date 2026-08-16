@@ -21,9 +21,32 @@
 - [x] 【优化】增加一个权限管理，AI在操作工具的时候需要人工批准（多增加几个模式，可以免审批和需要审批等等）
 - [x] 【优化】待办事项完成后似乎就不能在编辑和重新设置为待办事项了，请你修复这个问题
 - [x] 【BUG】现在首页的最上方的图片怎么没有了，需要修复
-- [ ] 【新增】待办事项需要记录完成的时间点
+- [x] 【新增】待办事项需要记录完成的时间点
+- [x] 【新增】配置**GitHub Actions，当我们提交版本代码时，自动完成Release发布**
+- [x] **【新增】增加自动更新检测，当检测到GitHub Release上存在新的版本后，可以提示版本更新，点击更新后程序可以自动下载并完成更新**
+- [x] 【新增】Windows 分发改为编译安装包（NSIS），不再分发裸 exe 程序
 
 ## 归档
+
+### 2026-08-16 待办完成时间点 + GitHub Actions 自动发布 + 应用内自动更新
+
+| 事项 | 实现说明 |
+| --- | --- |
+| 待办记录完成时间点 | `model.rs` 新增 `completed_at_of`/`set_completed_at`（`data.completed_at` ISO8601）；`set_todo_status` 与 `apply_patch`（patch status 同步维护）：新完成→写入时间点，恢复进行中/取消→清除，重复置 done 不刷新原时间点；AI `list_todos` 回传 `completed_at`。前端：`formatCompletedAt`（今天 HH:mm / 同年 M月D日 HH:mm / 跨年带年份），今日视图已完成区绿色 pill「✓ 完成于 …」、任务列表行完成态显示完成时间、编辑器状态旁只读展示。含 3 项新单测。 |
+| GitHub Actions 自动 Release | 新增 `.github/workflows/release.yml`：推 `v*` 标签（或手动）触发 → test 作业（tsc + mosh-core 单测）→ build 作业（macOS arm64/x64 双包、Ubuntu 22.04、Windows 并行，tauri-action 自动上传安装包 + `.sig` + `latest.json`）；发布流程与密钥配置见 `docs/release.md`。 |
+| 应用内自动更新 | 后端接入 `tauri-plugin-updater` + `tauri-plugin-process`（relaunch），`tauri.conf.json` 配置 endpoints（GitHub Releases latest.json）+ minisign 公钥 + `createUpdaterArtifacts`，capabilities 授予 `updater:default`/`process:allow-restart`；已生成签名密钥对（公钥已入 conf，私钥在 `/tmp/mosh-updater.key` 待管理员保存并配 GitHub Secrets）。前端：`state/updater.ts`（check/downloadAndInstall/relaunch 全流程，静默检查失败不打扰）+ `UpdaterToast.tsx` 右下角通知卡（版本对比 + 更新说明 + 下载进度条），App 启动 8s 后静默检查；设置→关于新增「软件更新」手动检查。 |
+
+验证：`cargo test -p mosh-core --locked` 80 项全部通过；`cargo clippy` 0 警告；`npm run check` 与 `npm run build` 均通过；`Cargo.lock` 已刷新（含两个 updater 插件）。注：`cargo check -p mosh`（Tauri 壳）仍因本机 glib 2.68 < 2.70 无法编译（环境预置限制，与改动无关），壳层改动遵循既有模式。
+
+### 2026-08-16 Windows 分发改为 NSIS 安装包
+
+| 事项 | 实现说明 |
+| --- | --- |
+| Windows 安装包化 | `tauri.conf.json` 新增 `bundle.windows.nsis`：`installMode: both`（安装时可选仅当前用户/所有用户）、`SimpChinese`/`English` 双语（跟随系统语言）；Release CI 的 Windows 作业改 `--bundles nsis` 聚焦安装包（产物 `mosh_x.y.z_x64-setup.exe` + `.sig`，不再上传冗余 en-US MSI）。 |
+| 交叉编译验证 | 本机实测 `tauri build --target x86_64-pc-windows-gnu`：Rust 侧全通（新配置校验 OK、updater 插件链接成功），仅 NSIS 打包需 wine + `makensis.exe`（CLI 标注实验性）——故安装包正式产出路径为 CI 原生 Windows runner（自动下载 NSIS 工具链，无此限制）。 |
+| 文档同步 | README「交叉编译到 Windows」章节改写：交叉编译降级为开发验证/自用调试（裸 exe 不再对外分发），新增「Windows 安装包（正式分发）」小节；`docs/release.md` 产物描述更新并说明 Windows 自动更新即静默重跑安装包。 |
+
+验证：交叉编译 Rust 侧全通（2m36s）；`npm run check`/`cargo test -p mosh-core`/`cargo clippy` 均无回归；YAML 语法校验通过。
 
 ### 2026-08-16 AI 删除日程 + 首页改版
 

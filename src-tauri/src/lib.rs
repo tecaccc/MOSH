@@ -857,6 +857,10 @@ async fn mcp_list_tools(base_url: String, token: Option<String>) -> Result<Vec<S
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // 自动更新：endpoints/pubkey 在 tauri.conf.json plugins.updater 配置；
+        // process 插件供前端 relaunch（安装完成后重启进入新版本）。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // 解析 app_data_dir，创建目录，打开（或新建）数据库并跑迁移。
             // 启动期失败直接 panic 带清晰信息（v1 可接受）。

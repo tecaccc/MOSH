@@ -1,0 +1,112 @@
+# 发布流水线：推送 v* 标签（或手动触发）→ 测试 → 三平台构建 → 自动发布 GitHub Release。
+#
+# 前置准备（详见 docs/release.md）：
+#   1. 仓库 Secrets 配置 TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#      （updater 签名密钥，用于生成 .sig 供应用内自动更新校验）；
+#   2. 发布前同步三处版本号：package.json / Cargo.toml(workspace) / src-tauri/tauri.conf.json。
+#
+# 产物：各平台安装包 + .sig 签名 + latest.json（tauri-action 自动生成，
+# 供客户端 updater 端点 https://github.com/tecaccc/MOSH/releases/latest/download/latest.json 检测更新）。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # 前置检查：前端类型 + 核心单测（快速失败，节省三平台构建资源）。
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Type check (tsc)
+        run: npm run check
+
+      - name: Core tests
+        run: cargo test -p mosh-core --locked
+
+  # 构建 + 发布：tag 对应 Release（已存在则复用）；macOS 同机出 arm64/x64 双包。
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            rust-target: aarch64-apple-darwin
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            rust-target: x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            args: ""
+            rust-target: ""
+          - platform: windows-latest
+            # Windows 正式分发形态为 NSIS 安装包（简中/英文，含 .sig 供应用内自动更新）；
+            # 不再分发裸 exe（MSI 如需可本地补打）。
+            args: --bundles nsis
+            rust-target: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust targets (macOS dual-arch)
+        if: matrix.rust-target != ''
+        run: rustup target add ${{ matrix.rust-target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install Linux system deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # updater 签名（生成 .sig；latest.json 由此生成）。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "MOSH v__VERSION__"
+          releaseBody: "在下方 Assets 选择对应平台安装包下载；已安装用户可在应用内直接检查更新。"
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

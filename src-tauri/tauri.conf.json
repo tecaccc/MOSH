@@ -22,9 +22,24 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwMDkzNEY0Qjg1QzZBNzMKUldSemFseTQ5RFFKNE9HTjQ0WTdVZ1FwTjV4VVJvWGdkRFlrSE41dTRZWk5BRmZ6akJ4SzhLZlgK",
+      "endpoints": [
+        "https://github.com/tecaccc/MOSH/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "languages": ["SimpChinese", "English"]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
