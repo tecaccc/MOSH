@@ -1,16 +1,22 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useAppStore } from "../state/store";
 import styles from "./TitleBar.module.css";
 
 /**
  * 自定义窗口标题栏（decorations: false）：左段与 Sidebar 同宽同色，
  * 右为 Windows 风格窗口按钮。空白区域可拖动窗口。浏览器直开时按钮 no-op。
+ * 助手视图时，最小化按钮左侧额外提供「会话历史」显隐开关（跨组件状态在
+ * app store 的 chatSideVisible，由 ChatPanel 消费）。
  */
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
 export default function TitleBar() {
   const [maximized, setMaximized] = useState(false);
+  const currentView = useAppStore((s) => s.currentView);
+  const chatSideVisible = useAppStore((s) => s.chatSideVisible);
+  const toggleChatSide = useAppStore((s) => s.toggleChatSide);
 
   useEffect(() => {
     if (!inTauri) return;
@@ -42,6 +48,21 @@ export default function TitleBar() {
       <div className={styles["tb-left"]} data-tauri-drag-region />
       <div className={styles["tb-main"]} data-tauri-drag-region />
       <div className={styles.tbActions}>
+        {currentView === "agent" ? (
+          <button
+            type="button"
+            className={`${styles["tb-btn"]} ${styles["tb-chat"]}${chatSideVisible ? ` ${styles.on}` : ""}`}
+            aria-label={chatSideVisible ? "隐藏会话历史" : "显示会话历史"}
+            title={chatSideVisible ? "隐藏会话历史" : "显示会话历史"}
+            onClick={toggleChatSide}
+          >
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="16" rx="2.5" />
+              <path d="M15 4v16" />
+              <path d="M18.5 9.5h.01M18.5 12.5h.01" />
+            </svg>
+          </button>
+        ) : null}
         <button type="button" className={styles["tb-btn"]} aria-label="最小化" onClick={onMinimize}>
           <svg viewBox="0 0 10 10" width="10" height="10">
             <path d="M0 5.5h10" stroke="currentColor" strokeWidth="1" />

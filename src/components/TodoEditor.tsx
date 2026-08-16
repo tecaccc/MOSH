@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { fromLocalInput, toLocalInput } from "../lib/datetime";
 import { subtasksOf, useAppStore } from "../state/store";
+import { useDialogStore } from "../state/dialog";
 import type { Priority, Record as RecordT, Status } from "../lib/types";
 import styles from "./TodoEditor.module.css";
 
@@ -171,7 +172,13 @@ export default function TodoEditor({ record }: { record: RecordT | null }) {
 
   async function onDeleteSub(s: RecordT) {
     if (subBusy) return;
-    if (!confirm(`删除子任务「${s.title}」？此为软删，数据保留于库。`)) return;
+    const ok = await useDialogStore.getState().confirm({
+      title: "删除子任务",
+      message: `将删除子任务「${s.title}」。此为软删，数据保留于库可恢复。`,
+      danger: true,
+      confirmText: "删除",
+    });
+    if (!ok) return;
     setSubBusy(true);
     setSubError(null);
     try {

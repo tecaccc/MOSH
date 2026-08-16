@@ -3,11 +3,14 @@ import { Streamdown } from "streamdown";
 import "streamdown/styles.css";
 import { toolLabel, useAgentStore, type UiMessage } from "../state/agent";
 import { useAppStore } from "../state/store";
+import { useDialogStore } from "../state/dialog";
+import { PERMISSION_MODES, type PermissionMode } from "../lib/types";
 import styles from "./ChatPanel.module.css";
 
 /**
- * 助手聊天面板：模型选择 + 会话侧栏 + 消息区（用户纯文本气泡 /
- * 助手 streamdown 渲染 + 工具卡片）+ 输入区（Enter 发送 / Shift+Enter 换行）。
+ * 助手聊天面板：消息区（用户纯文本气泡 / 助手 streamdown 渲染 + 工具卡片）
+ * + 输入区（composer：自动增高 textarea + 底部工具条——模型选择、技能、MCP，
+ * 参考 cherry-studio）+ 右侧会话侧栏（显隐开关在标题栏，删除支持）。
  */
 
 /** 工具卡片参数摘要（一行）。 */
@@ -17,6 +20,10 @@ function argSummary(m: UiMessage): string {
   if (typeof a.title === "string") return String(a.title);
   if (typeof a.from === "string" && typeof a.to === "string") return `${a.from} ~ ${a.to}`;
   if (typeof a.status === "string") return `→ ${a.status}`;
+  if (Array.isArray(a.ids)) return `${a.ids.length} 个`;
+  if (typeof a.q === "string" || typeof a.query === "string") {
+    return String(a.q ?? a.query);
+  }
   return "";
 }
 
@@ -32,25 +39,190 @@ function undoable(m: UiMessage): boolean {
 function resultLine(m: UiMessage): string {
   const r = m.result as Record<string, unknown> | undefined;
   if (!r) return "";
+  // 删除类：优先展示删除数/标题（单删带标题、批量部分失败带失败数）。
+  if (typeof r.deleted === "number") {
+    const failed = Array.isArray(r.failed) ? r.failed.length : 0;
+    if (failed > 0) return `已删 ${r.deleted} 条 · ${failed} 条失败`;
+    if (r.deleted === 1 && typeof r.title === "string") return `已删「${r.title}」`;
+    return `已删 ${r.deleted} 条`;
+  }
   if (m.ok === false && typeof r.error === "string") return r.error;
   if (typeof r.count === "number") return `${r.count} 条`;
   if (m.ok === true) return "完成";
   return "";
 }
 
+/** 任意值 → 美化 JSON 文本（字符串先尝试再解析；失败回退原文）。 */
+function prettyJson(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") {
+    try {
+      return JSON.stringify(JSON.parse(v), null, 2);
+    } catch {
+      return v;
+    }
+  }
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
 function ToolCard({ m }: { m: UiMessage }) {
   const undoCreate = useAgentStore((s) => s.undoCreate);
+  const [open, setOpen] = useState(false);
+  const argsText = prettyJson(m.args);
+  const resultText = prettyJson(m.result);
+
   return (
-    <div className={`${styles.toolcard}${m.ok === false ? ` ${styles.fail}` : ""}${m.undone ? ` ${styles.undone}` : ""}`}>
-      <span className={styles["tc-name"]}>{toolLabel(m.tool ?? "")}</span>
-      {argSummary(m) ? <span className={styles["tc-args"]}>{argSummary(m)}</span> : null}
-      <span className={styles["tc-result"]}>{m.undone ? "已撤销" : resultLine(m)}</span>
-      {undoable(m) && !m.undone ? (
-        <button type="button" className={styles["tc-undo"]} onClick={() => void undoCreate(m)}>
-          撤销
+    <div className={`${styles.toolcard}${m.ok === false ? ` ${styles.fail}` : ""}${m.undone ? ` ${styles.undone}` : ""}${open ? ` ${styles.open}` : ""}`}>
+      <div className={styles["tc-row"]}>
+        <button
+          type="button"
+          className={styles["tc-toggle"]}
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          title={open ? "收起详情" : "展开查看参数与返回"}
+        >
+          <span
+            className={`${styles["tc-chevron"]}${open ? ` ${styles.up}` : ""}`}
+            aria-hidden="true"
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </span>
+          <span className={styles["tc-name"]}>{toolLabel(m.tool ?? "")}</span>
+          {argSummary(m) ? <span className={styles["tc-args"]}>{argSummary(m)}</span> : null}
+          <span className={styles["tc-result"]}>{m.undone ? "已撤销" : resultLine(m)}</span>
         </button>
+        {undoable(m) && !m.undone ? (
+          <button type="button" className={styles["tc-undo"]} onClick={() => void undoCreate(m)}>
+            撤销
+          </button>
+        ) : null}
+      </div>
+      {open ? (
+        <div className={styles["tc-detail"]}>
+          {argsText ? (
+            <div className={styles["tc-block"]}>
+              <div className={styles["tc-block-label"]}>输入参数</div>
+              <pre className={styles["tc-pre"]}>{argsText}</pre>
+            </div>
+          ) : null}
+          {resultText ? (
+            <div className={styles["tc-block"]}>
+              <div className={styles["tc-block-label"]}>返回结果</div>
+              <pre className={styles["tc-pre"]}>{resultText}</pre>
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
+  );
+}
+
+/** 技能弹层：全部技能开关 + 前往设置管理（深链到 AI 工具→技能）。 */
+function SkillsPopover({ onClose }: { onClose: () => void }) {
+  const skills = useAgentStore((s) => s.skills);
+  const toggleSkill = useAgentStore((s) => s.toggleSkill);
+  const openSettings = useAppStore((s) => s.openSettings);
+  const activeCount = skills.filter((s) => s.active).length;
+
+  return (
+    <>
+      <button type="button" className={styles["pop-mask"]} aria-label="关闭弹层" onClick={onClose} />
+      <div className={styles.popover}>
+        <div className={styles["pop-head"]}>
+          <span className={styles["pop-title"]}>技能</span>
+          <span className={styles["pop-sub"]}>{activeCount > 0 ? `已启用 ${activeCount}` : "未启用"}</span>
+        </div>
+        <div className={styles["pop-body"]}>
+          {skills.length === 0 ? (
+            <div className={styles["pop-empty"]}>暂无技能</div>
+          ) : (
+            skills.map((sk) => (
+              <label key={sk.id} className={styles["pop-item"]} title={sk.prompt}>
+                <input
+                  type="checkbox"
+                  checked={sk.active}
+                  onChange={(e) => void toggleSkill(sk.id, e.currentTarget.checked)}
+                />
+                <span className={styles["pop-item-main"]}>
+                  <span className={styles["pop-item-name"]}>
+                    {sk.name}
+                    {sk.builtin ? <span className={styles["pop-tag"]}>内置</span> : null}
+                  </span>
+                  <span className={styles["pop-item-desc"]}>{sk.description}</span>
+                </span>
+              </label>
+            ))
+          )}
+        </div>
+        <button
+          type="button"
+          className={styles["pop-foot"]}
+          onClick={() => {
+            onClose();
+            openSettings("aitools", "skills");
+          }}
+        >
+          管理技能（新建/编辑）→
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** MCP 弹层：服务器开关 + 状态徽标 + 前往设置管理（深链到 AI 工具→MCP）。 */
+function McpPopover({ onClose }: { onClose: () => void }) {
+  const servers = useAgentStore((s) => s.mcpServers);
+  const toggleMcpServer = useAgentStore((s) => s.toggleMcpServer);
+  const openSettings = useAppStore((s) => s.openSettings);
+  const enabledCount = servers.filter((s) => s.enabled).length;
+
+  return (
+    <>
+      <button type="button" className={styles["pop-mask"]} aria-label="关闭弹层" onClick={onClose} />
+      <div className={styles.popover}>
+        <div className={styles["pop-head"]}>
+          <span className={styles["pop-title"]}>MCP 服务器</span>
+          <span className={styles["pop-sub"]}>
+            {servers.length === 0 ? "未配置" : enabledCount > 0 ? `已启用 ${enabledCount}/${servers.length}` : "全部停用"}
+          </span>
+        </div>
+        <div className={styles["pop-body"]}>
+          {servers.length === 0 ? (
+            <div className={styles["pop-empty"]}>尚未添加 MCP 服务器</div>
+          ) : (
+            servers.map((srv) => (
+              <label key={srv.id} className={styles["pop-item"]} title={srv.url}>
+                <input
+                  type="checkbox"
+                  checked={srv.enabled}
+                  onChange={(e) => void toggleMcpServer(srv.id, e.currentTarget.checked)}
+                />
+                <span className={styles["pop-item-main"]}>
+                  <span className={styles["pop-item-name"]}>{srv.name}</span>
+                  <span className={styles["pop-item-desc"]}>{srv.url}</span>
+                </span>
+              </label>
+            ))
+          )}
+        </div>
+        <button
+          type="button"
+          className={styles["pop-foot"]}
+          onClick={() => {
+            onClose();
+            openSettings("aitools", "mcp");
+          }}
+        >
+          管理 MCP 服务器（添加/测试）→
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -68,12 +240,21 @@ export default function ChatPanel() {
   const abort = useAgentStore((s) => s.abort);
   const newSession = useAgentStore((s) => s.newSession);
   const openSession = useAgentStore((s) => s.openSession);
+  const deleteSession = useAgentStore((s) => s.deleteSession);
   const selectModel = useAgentStore((s) => s.selectModel);
-  const setView = useAppStore((s) => s.setView);
+  const skills = useAgentStore((s) => s.skills);
+  const mcpServers = useAgentStore((s) => s.mcpServers);
+  const permissionMode = useAgentStore((s) => s.permissionMode);
+  const selectPermissionMode = useAgentStore((s) => s.selectPermissionMode);
+  const pendingApproval = useAgentStore((s) => s.pendingApproval);
+  const decideApproval = useAgentStore((s) => s.decideApproval);
+  const chatSideVisible = useAppStore((s) => s.chatSideVisible);
+  const openSettings = useAppStore((s) => s.openSettings);
 
   const [input, setInput] = useState("");
-  const [sideVisible, setSideVisible] = useState(true);
+  const [pop, setPop] = useState<"none" | "skills" | "mcp">("none");
   const listRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     void init();
@@ -83,6 +264,14 @@ export default function ChatPanel() {
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages.length, messages.at(-1)?.text.length]);
+
+  // 输入框自动增高：内容变化时重算高度（76px ~ 220px）。
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(Math.max(ta.scrollHeight, 76), 220)}px`;
+  }, [input]);
 
   function onKeydown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -95,40 +284,36 @@ export default function ChatPanel() {
     const t = input;
     if (t.trim().length === 0 || useAgentStore.getState().streaming) return;
     setInput("");
+    setPop("none");
     await send(t);
   }
 
-  return (
-    <section className={`${styles.chat}${!sideVisible ? ` ${styles["side-hidden"]}` : ""}`}>
-      <div className={styles.main}>
-        {/* 顶栏：模型选择 + 会话列表显隐 */}
-        <div className={styles["chat-head"]}>
-          {configured ? (
-            <select
-              className={styles["model-select"]}
-              value={selectedModel}
-              onChange={(e) => selectModel(e.currentTarget.value)}
-              title="选择模型"
-            >
-              {models.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          ) : (
-            <span className={styles["chat-title"]}>AI 助手</span>
-          )}
+  async function onDeleteSession(id: string, title: string) {
+    const ok = await useDialogStore.getState().confirm({
+      title: "删除会话",
+      message: `将删除会话「${title}」及其全部消息，删除后不可恢复。`,
+      danger: true,
+      confirmText: "删除",
+    });
+    if (!ok) return;
+    await deleteSession(id);
+  }
 
-          <button
-            type="button"
-            className={`${styles["side-toggle"]}${sideVisible ? ` ${styles.active}` : ""}`}
-            onClick={() => setSideVisible(!sideVisible)}
-            title={sideVisible ? "隐藏会话列表" : "显示会话列表"}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-              <rect x="3" y="4" width="18" height="16" rx="2.5" />
-              <path d="M15 4v16" />
-            </svg>
-          </button>
+  const activeSkills = skills.filter((s) => s.active).length;
+  const enabledMcp = mcpServers.filter((s) => s.enabled).length;
+
+  return (
+    <section className={`${styles.chat}${!chatSideVisible ? ` ${styles["side-hidden"]}` : ""}`}>
+      <div className={styles.main}>
+        {/* 顶栏：标题 + 当前模型 */}
+        <div className={styles["chat-head"]}>
+          <span className={styles["chat-title"]}>AI 助手</span>
+          {configured && selectedModel ? (
+            <span className={styles["head-model"]}>{selectedModel}</span>
+          ) : null}
+          {activeSkills > 0 ? <span className={styles["head-chip"]}>技能 {activeSkills}</span> : null}
+          {enabledMcp > 0 ? <span className={styles["head-chip"]}>MCP {enabledMcp}</span> : null}
+          <span className={styles["head-hint"]}>会话历史开关在右上窗口按钮旁</span>
         </div>
 
         {configured === false ? (
@@ -139,7 +324,7 @@ export default function ChatPanel() {
               填写任意 OpenAI 兼容端点（DeepSeek / OpenAI / 通义…）即可开始；
               本地 Ollama 指向 http://localhost:11434/v1 亦可。
             </div>
-            <button type="button" className={styles["guide-btn"]} onClick={() => setView("settings")}>
+            <button type="button" className={styles["guide-btn"]} onClick={() => openSettings("ai")}>
               前往设置
             </button>
           </div>
@@ -180,49 +365,154 @@ export default function ChatPanel() {
 
             {error ? <div className={styles.err}>{error}</div> : null}
 
-            <div className={styles.inputbar}>
+            {/* 待审批工具调用（审批模式下）：展示工具与参数，等待用户决定 */}
+            {pendingApproval ? (
+              <div className={styles.approval}>
+                <div className={styles["ap-head"]}>
+                  <span className={styles["ap-ico"]}>
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 3l7 3v5c0 4.4-2.9 8.1-7 9.5-4.1-1.4-7-5.1-7-9.5V6z" />
+                    </svg>
+                  </span>
+                  <div className={styles["ap-title"]}>
+                    待批准的工具调用
+                    <span className={styles["ap-tool"]}>{toolLabel(pendingApproval.tool)}</span>
+                  </div>
+                </div>
+                <pre className={styles["ap-args"]}>{prettyJson(pendingApproval.args) || "（无参数）"}</pre>
+                <div className={styles["ap-actions"]}>
+                  <button type="button" className={styles["ap-deny"]} onClick={() => void decideApproval(false)}>
+                    拒绝
+                  </button>
+                  <button type="button" className={styles["ap-ok"]} onClick={() => void decideApproval(true)}>
+                    批准执行
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {/* 输入区（composer）：自动增高 textarea + 底部工具条 */}
+            <div className={styles.composer}>
               <textarea
+                ref={taRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeydown}
                 placeholder={streaming ? "回复中…（可点右侧停止）" : "输入消息，Enter 发送，Shift+Enter 换行"}
-                rows={1}
+                rows={3}
                 disabled={configured !== true}
               />
-              {streaming ? (
-                <button type="button" className={styles.stop} onClick={() => void abort()}>停止</button>
-              ) : (
-                <button
-                  type="button"
-                  className={styles.send}
-                  disabled={input.trim().length === 0}
-                  onClick={() => void onSend()}
-                >
-                  发送
-                </button>
-              )}
+              <div className={styles["toolbar"]}>
+                <div className={styles["tool-left"]}>
+                  {configured ? (
+                    <select
+                      className={styles["model-select"]}
+                      value={selectedModel}
+                      onChange={(e) => selectModel(e.currentTarget.value)}
+                      title="选择模型"
+                    >
+                      {models.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  ) : null}
+
+                  <select
+                    className={`${styles["model-select"]} ${styles["perm-select"]}`}
+                    value={permissionMode}
+                    onChange={(e) => void selectPermissionMode(e.currentTarget.value as PermissionMode)}
+                    title={PERMISSION_MODES.find((p) => p.value === permissionMode)?.desc}
+                  >
+                    {PERMISSION_MODES.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        🛡 {p.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    className={`${styles["tool-btn"]}${activeSkills > 0 ? ` ${styles.on}` : ""}`}
+                    onClick={() => setPop(pop === "skills" ? "none" : "skills")}
+                    title="技能（Skills）：为助手启用领域行为指引"
+                  >
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z" />
+                      <path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" />
+                    </svg>
+                    <span>技能</span>
+                    {activeSkills > 0 ? <span className={styles["tool-badge"]}>{activeSkills}</span> : null}
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`${styles["tool-btn"]}${enabledMcp > 0 ? ` ${styles.on}` : ""}`}
+                    onClick={() => setPop(pop === "mcp" ? "none" : "mcp")}
+                    title="MCP：外部工具服务器"
+                  >
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="8" width="5" height="8" rx="1.5" />
+                      <rect x="16" y="8" width="5" height="8" rx="1.5" />
+                      <path d="M8 12h8" />
+                    </svg>
+                    <span>MCP</span>
+                    {enabledMcp > 0 ? <span className={styles["tool-badge"]}>{enabledMcp}</span> : null}
+                  </button>
+                </div>
+
+                {streaming ? (
+                  <button type="button" className={styles.stop} onClick={() => void abort()}>停止</button>
+                ) : (
+                  <button
+                    type="button"
+                    className={styles.send}
+                    disabled={input.trim().length === 0}
+                    onClick={() => void onSend()}
+                  >
+                    发送
+                  </button>
+                )}
+              </div>
+
+              {pop === "skills" ? <SkillsPopover onClose={() => setPop("none")} /> : null}
+              {pop === "mcp" ? <McpPopover onClose={() => setPop("none")} /> : null}
             </div>
           </>
         )}
       </div>
 
-      {/* 会话侧栏（右侧，可隐藏） */}
-      {sideVisible ? (
+      {/* 会话侧栏（右侧；显隐由标题栏按钮控制） */}
+      {chatSideVisible ? (
         <aside className={styles.side}>
           <button type="button" className={styles.new} onClick={newSession}>+ 新会话</button>
           <div className={styles["sess-label"]}>历史会话</div>
           <div className={styles["sess-list"]}>
             {sessions.map((s) => (
-              <button
+              <div
                 key={s.session_id}
-                type="button"
-                className={`${styles.sess}${s.session_id === currentSession ? ` ${styles.active}` : ""}`}
-                onClick={() => void openSession(s.session_id)}
-                title={s.title}
+                className={`${styles["sess-row"]}${s.session_id === currentSession ? ` ${styles.active}` : ""}`}
               >
-                <span className={styles["sess-title"]}>{s.title}</span>
-                <span className={styles["sess-count"]}>{s.message_count}</span>
-              </button>
+                <button
+                  type="button"
+                  className={styles.sess}
+                  onClick={() => void openSession(s.session_id)}
+                  title={s.title}
+                >
+                  <span className={styles["sess-title"]}>{s.title}</span>
+                  <span className={styles["sess-count"]}>{s.message_count}</span>
+                </button>
+                <button
+                  type="button"
+                  className={styles["sess-del"]}
+                  aria-label={`删除会话 ${s.title}`}
+                  title="删除会话"
+                  onClick={() => void onDeleteSession(s.session_id, s.title)}
+                >
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6.5 7l1 13h9l1-13" />
+                  </svg>
+                </button>
+              </div>
             ))}
             {sessions.length === 0 ? (
               <div className={styles["sess-empty"]}>暂无历史会话</div>

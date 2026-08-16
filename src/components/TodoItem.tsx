@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { priorityOf, subtasksOf, useAppStore } from "../state/store";
+import { useDialogStore } from "../state/dialog";
 import type { Record as RecordT, Status } from "../lib/types";
 import styles from "./TodoItem.module.css";
 
@@ -66,7 +67,13 @@ export default function TodoItem({ record }: { record: RecordT }) {
 
   async function onDelete() {
     if (busy) return;
-    if (!confirm(`删除「${record.title}」？此为软删，数据保留于库。`)) return;
+    const ok = await useDialogStore.getState().confirm({
+      title: "删除待办",
+      message: `将删除「${record.title}」及其中数据。此为软删，数据保留于库可恢复。`,
+      danger: true,
+      confirmText: "删除",
+    });
+    if (!ok) return;
     setBusy(true);
     setError(null);
     try {
@@ -79,7 +86,11 @@ export default function TodoItem({ record }: { record: RecordT }) {
   }
 
   async function onAddSubtask() {
-    const title = window.prompt("子任务标题：");
+    const title = await useDialogStore.getState().prompt({
+      title: "添加子任务",
+      placeholder: "子任务标题",
+      confirmText: "添加",
+    });
     if (!title || title.trim().length === 0) return;
     setBusy(true);
     setError(null);

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import ChatPanel from "./components/ChatPanel";
 import CalendarPane from "./components/calendar/CalendarPane";
+import DialogHost from "./components/DialogHost";
 import EventEditor from "./components/calendar/EventEditor";
 import HomeView from "./components/HomeView";
 import Modal from "./components/Modal";
@@ -83,6 +84,9 @@ export default function App() {
           <EventEditor event={editingEvent} />
         </Modal>
       ) : null}
+
+      {/* 全局对话框（confirm/prompt 的自绘替代，任意视图可调用） */}
+      <DialogHost />
 
       <ReminderToast />
     </div>

@@ -55,6 +55,19 @@
   color: #ffffff;
 }
 
+/* 会话历史开关（助手视图，位于最小化左侧）：与窗口按钮同规格但可点击，
+   与窗口按钮之间留一道细分隔线区分功能。 */
+.tb-chat {
+  cursor: pointer;
+  color: var(--text-muted);
+  border-left: 1px solid var(--border-soft);
+  border-right: 1px solid var(--border-soft);
+}
+
+.tb-chat.on {
+  color: var(--accent);
+}
+
 @media (prefers-color-scheme: dark) {
   .tb-btn:hover {
     background: rgba(255, 255, 255, 0.09);
