@@ -13,6 +13,9 @@
 | `Cargo.toml`（workspace 根）      | `version` |
 | `src-tauri/tauri.conf.json`       | `version` |
 
+并把 `CHANGELOG.md` 中 `[Unreleased]` 小节的变更整理为对应版本小节（日期当日），
+新建空的 `[Unreleased]`。Release 页说明会引导用户查看 CHANGELOG。
+
 然后打标签推送：
 
 ```bash

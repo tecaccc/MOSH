@@ -106,7 +106,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "MOSH v__VERSION__"
-          releaseBody: "在下方 Assets 选择对应平台安装包下载；已安装用户可在应用内直接检查更新。"
+          releaseBody: "变更详情见仓库 CHANGELOG.md；在下方 Assets 选择对应平台安装包下载；已安装用户可在应用内直接检查更新。"
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
