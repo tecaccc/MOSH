@@ -15,9 +15,13 @@ import type {
   AiConfig,
   CurrentWeather,
   EventInput,
+  McpServerConfig,
+  PermissionMode,
   Record as RecordT,
   RecordFilter,
   RecordPatch,
+  SkillDef,
+  SkillInfo,
   Status,
   TodoInput,
   WeatherConfig,
@@ -114,6 +118,22 @@ export async function agentAbort(sessionId: string): Promise<void> {
   await invoke<void>("agent_abort", { sessionId });
 }
 
+/** 审批回传：对待批准工具调用的决定。 */
+export async function agentApprove(callId: string, approved: boolean): Promise<void> {
+  await invoke<void>("agent_approve", { callId, approved });
+}
+
+/** 读工具审批模式（缺省 auto）。 */
+export async function getPermissionMode(): Promise<PermissionMode> {
+  const s = await invoke<string>("get_permission_mode");
+  return s === "write" || s === "all" ? s : "auto";
+}
+
+/** 写工具审批模式。 */
+export async function setPermissionMode(mode: PermissionMode): Promise<void> {
+  await invoke<void>("set_permission_mode", { mode });
+}
+
 /** 读 AI 模型配置；未配置返回 null。 */
 export async function getAiConfig(): Promise<AiConfig | null> {
   return invoke<AiConfig | null>("get_ai_config");
@@ -161,4 +181,58 @@ export async function listAgentSessions(): Promise<AgentSessionSummary[]> {
 /** 某会话全部消息（历史回看）。 */
 export async function listAgentMessages(sessionId: string): Promise<AgentMessage[]> {
   return invoke<AgentMessage[]>("list_agent_messages", { sessionId });
+}
+
+/** 删除整个会话（含全部消息行）。 */
+export async function deleteAgentSession(sessionId: string): Promise<void> {
+  await invoke<void>("delete_agent_session", { sessionId });
+}
+
+// —— Skills ——
+
+/** 全部技能（内置在前）+ 启用状态。 */
+export async function listSkills(): Promise<SkillInfo[]> {
+  return invoke<SkillInfo[]>("list_skills");
+}
+
+/** 新建/更新自定义技能（返回后端补齐 id 的定义）。 */
+export async function saveSkill(skill: SkillDef): Promise<SkillDef> {
+  return invoke<SkillDef>("save_skill", { skill });
+}
+
+/** 删除自定义技能。 */
+export async function deleteSkill(id: string): Promise<void> {
+  await invoke<void>("delete_skill", { id });
+}
+
+/** 开/关技能。 */
+export async function setSkillActive(id: string, active: boolean): Promise<void> {
+  await invoke<void>("set_skill_active", { id, active });
+}
+
+// —— MCP ——
+
+/** 服务器列表。 */
+export async function listMcpServers(): Promise<McpServerConfig[]> {
+  return invoke<McpServerConfig[]>("list_mcp_servers");
+}
+
+/** 新建/更新服务器（按 id upsert；返回补齐 id 的配置）。 */
+export async function saveMcpServer(server: McpServerConfig): Promise<McpServerConfig> {
+  return invoke<McpServerConfig>("save_mcp_server", { server });
+}
+
+/** 删除服务器。 */
+export async function deleteMcpServer(id: string): Promise<void> {
+  await invoke<void>("delete_mcp_server", { id });
+}
+
+/** 启/停某台服务器。 */
+export async function setMcpEnabled(id: string, enabled: boolean): Promise<void> {
+  await invoke<void>("set_mcp_enabled", { id, enabled });
+}
+
+/** 探测端点：连接并返回工具名列表（设置页“测试连接”）。 */
+export async function mcpListTools(baseUrl: string, token?: string | null): Promise<string[]> {
+  return invoke<string[]>("mcp_list_tools", { baseUrl, token: token ?? null });
 }

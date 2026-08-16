@@ -9,14 +9,28 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import {
   agentAbort as ipcAbort,
+  agentApprove,
   agentSend as ipcSend,
+  deleteAgentSession,
   deleteRecord as ipcDeleteRecord,
   getAiConfig,
+  getPermissionMode,
   listAgentMessages,
   listAgentSessions,
   listAiModels,
+  listMcpServers,
+  listSkills,
+  setMcpEnabled,
+  setPermissionMode,
+  setSkillActive,
 } from "../lib/ipc";
-import type { AgentEventPayload, AgentSessionSummary } from "../lib/types";
+import type {
+  AgentEventPayload,
+  AgentSessionSummary,
+  McpServerConfig,
+  PermissionMode,
+  SkillInfo,
+} from "../lib/types";
 import { useAppStore } from "./store";
 
 /** UI 消息（持久化行的超集：流式气泡/撤销标记仅存内存）。 */
@@ -37,14 +51,29 @@ const TOOL_LABELS: Record<string, string> = {
   create_todo: "创建待办",
   create_event: "创建日程",
   update_event: "修改日程",
+  delete_event: "删除日程",
+  delete_events: "批量删除",
   list_todos: "查询待办",
   list_events: "查询日程",
   set_todo_status: "设置状态",
   add_subtask: "添加子任务",
 };
 
+/** MCP 工具名 → 卡片标题：`mcp__{server}__{tool}` 取中段服务器名。 */
 export function toolLabel(tool: string): string {
+  if (tool.startsWith("mcp__")) {
+    const parts = tool.split("__");
+    return parts.length === 3 ? `MCP·${parts[1]}` : tool;
+  }
   return TOOL_LABELS[tool] ?? tool;
+}
+
+/** 待人工批准的工具调用（审批模式下）。 */
+export interface PendingApproval {
+  callId: string;
+  turnId: string;
+  tool: string;
+  args: unknown;
 }
 
 interface AgentState {
@@ -57,15 +86,29 @@ interface AgentState {
   error: string | null;
   models: string[];
   selectedModel: string;
+  /** 技能（含启用状态；聊天工具条/设置页共用）。 */
+  skills: SkillInfo[];
+  /** MCP 服务器列表。 */
+  mcpServers: McpServerConfig[];
+  /** 工具审批模式。 */
+  permissionMode: PermissionMode;
+  /** 当前待批准的工具调用（null=无）。 */
+  pendingApproval: PendingApproval | null;
 
   init(): Promise<void>;
   refreshSessions(): Promise<void>;
   newSession(): void;
   openSession(id: string): Promise<void>;
+  deleteSession(id: string): Promise<void>;
   send(text: string): Promise<void>;
   abort(): Promise<void>;
   selectModel(m: string): void;
   undoCreate(m: UiMessage): Promise<void>;
+  loadChatTools(): Promise<void>;
+  toggleSkill(id: string, active: boolean): Promise<void>;
+  toggleMcpServer(id: string, enabled: boolean): Promise<void>;
+  selectPermissionMode(mode: PermissionMode): Promise<void>;
+  decideApproval(approved: boolean): Promise<void>;
 }
 
 /** 当前事件流所属会话（start 时记录，end 清除；跨会话 delta 丢弃）。 */
@@ -123,8 +166,12 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   error: null,
   models: [],
   selectedModel: "",
+  skills: [],
+  mcpServers: [],
+  permissionMode: "auto",
+  pendingApproval: null,
 
-  /** 初始化：读配置 + 会话列表 + 可选模型 + 绑定事件（幂等）。 */
+  /** 初始化：读配置 + 会话列表 + 可选模型 + 技能/MCP + 绑定事件（幂等）。 */
   init: async () => {
     try {
       const cfg = await getAiConfig();
@@ -142,6 +189,12 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       set({ configured: false });
     }
     await get().refreshSessions();
+    await get().loadChatTools();
+    try {
+      set({ permissionMode: await getPermissionMode() });
+    } catch {
+      /* 非 Tauri 环境忽略 */
+    }
     // 恢复最近会话（若有）。
     if (get().sessions.length > 0 && !get().currentSession) {
       await get().openSession(get().sessions[0].session_id);
@@ -196,12 +249,25 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
           ],
         }));
       });
+      await listen<AgentEventPayload>("agent://approval", (e) => {
+        const p = e.payload;
+        if (p.type !== "approval_required") return;
+        if (activeTurnSession !== get().currentSession) return;
+        set({
+          pendingApproval: {
+            callId: p.call_id,
+            turnId: p.turn_id,
+            tool: p.tool,
+            args: p.args,
+          },
+        });
+      });
       await listen<AgentEventPayload>("agent://end", (e) => {
         const p = e.payload;
         if (p.type !== "end") return;
         settleStreaming(set);
         activeTurnSession = null;
-        set({ streaming: false });
+        set({ streaming: false, pendingApproval: null });
         if (p.reason === "error" && lastTurnSession === get().currentSession) {
           set({ error: p.error ?? "模型调用失败" });
         }
@@ -216,6 +282,62 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       set({ sessions: await listAgentSessions() });
     } catch {
       /* 非 Tauri 环境忽略 */
+    }
+  },
+
+  /** 拉取技能与 MCP 服务器（静默失败，非 Tauri 环境忽略）。 */
+  loadChatTools: async () => {
+    try {
+      const [skills, mcpServers] = await Promise.all([listSkills(), listMcpServers()]);
+      set({ skills, mcpServers });
+    } catch {
+      /* 忽略 */
+    }
+  },
+
+  /** 开/关技能（成功后同步本地状态）。 */
+  toggleSkill: async (id, active) => {
+    try {
+      await setSkillActive(id, active);
+      set((s) => ({
+        skills: s.skills.map((k) => (k.id === id ? { ...k, active } : k)),
+      }));
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  /** 启/停 MCP 服务器（成功后同步本地状态）。 */
+  toggleMcpServer: async (id, enabled) => {
+    try {
+      await setMcpEnabled(id, enabled);
+      set((s) => ({
+        mcpServers: s.mcpServers.map((m) => (m.id === id ? { ...m, enabled } : m)),
+      }));
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  /** 切换审批模式（持久化 + 本地同步）。 */
+  selectPermissionMode: async (mode) => {
+    set({ permissionMode: mode });
+    try {
+      await setPermissionMode(mode);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  /** 对待批准工具调用回传决定；成功后清除待审批栏。 */
+  decideApproval: async (approved) => {
+    const p = get().pendingApproval;
+    if (!p) return;
+    try {
+      await agentApprove(p.callId, approved);
+      set({ pendingApproval: null });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
     }
   },
 
@@ -245,6 +367,21 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   newSession: () => {
     streamingKey = null;
     set({ currentSession: crypto.randomUUID(), messages: [], error: null });
+  },
+
+  /** 删除会话：删库 + 刷新列表；删的是当前会话则另起一个空的。 */
+  deleteSession: async (id) => {
+    try {
+      await deleteAgentSession(id);
+      await get().refreshSessions();
+      if (get().currentSession === id) {
+        get().newSession();
+        const next = get().sessions[0]?.session_id;
+        if (next) await get().openSession(next);
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   /** 发送消息：落 UI 气泡 + 驱动后端循环；失败（未配置/在跑）→ error。 */

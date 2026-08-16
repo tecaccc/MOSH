@@ -26,14 +26,34 @@ import type {
 /** 视图枚举（对齐设计稿侧栏导航）。 */
 export type View = "home" | "today" | "calendar" | "agent" | "settings";
 
+/** 设置页分区（与 SettingsView 的 SettingsSection 同构；深链用）。 */
+export type SettingsSection = "weather" | "ai" | "aitools" | "about";
+/** AI 工具子面板（深链用）。 */
+export type SettingsPane = "skills" | "mcp";
+
+/** 设置深链请求：openSettings 写入，SettingsView 挂载后消费。 */
+export interface SettingsTarget {
+  section: SettingsSection;
+  pane?: SettingsPane;
+}
+
 interface AppState {
   /** 当前加载到内存的全部（未软删）todo。 */
   records: RecordT[];
   currentView: View;
   /** 当前编辑的 todo id；null=新建模式；undefined=编辑器关闭。 */
   selectedId: string | null | undefined;
+  /** AI 聊天历史侧栏显隐（标题栏按钮切换，ChatPanel 消费）。 */
+  chatSideVisible: boolean;
+  /** 设置页深链目标（SettingsView 消费后清空）。 */
+  settingsTarget: SettingsTarget | null;
 
   setView(view: View): void;
+  /** 深链进设置：直接落到指定分区（与可选子面板）。 */
+  openSettings(section: SettingsSection, pane?: SettingsPane): void;
+  /** SettingsView 消费后清除目标。 */
+  consumeSettingsTarget(): void;
+  toggleChatSide(): void;
   loadTodos(): Promise<void>;
   startCreate(): void;
   startEdit(id: string): void;
@@ -49,8 +69,17 @@ export const useAppStore = create<AppState>()((set) => ({
   records: [],
   currentView: "home",
   selectedId: undefined,
+  chatSideVisible: true,
+  settingsTarget: null,
 
   setView: (view) => set({ currentView: view }),
+
+  openSettings: (section, pane) =>
+    set({ currentView: "settings", settingsTarget: pane ? { section, pane } : { section } }),
+
+  consumeSettingsTarget: () => set({ settingsTarget: null }),
+
+  toggleChatSide: () => set((s) => ({ chatSideVisible: !s.chatSideVisible })),
 
   loadTodos: async () => {
     const list = await listRecords({ kind: "todo" });

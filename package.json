@@ -12,6 +12,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@lobehub/icons": "^5.16.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "lunar-typescript": "^1.8.6",

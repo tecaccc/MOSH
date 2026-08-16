@@ -186,4 +186,55 @@ export type AgentEventPayload =
   | { type: "start"; session_id: string; turn_id: string }
   | { type: "delta"; turn_id: string; text: string }
   | { type: "tool"; turn_id: string; tool: string; args: unknown; ok: boolean; result: unknown }
+  | {
+      type: "approval_required";
+      turn_id: string;
+      call_id: string;
+      tool: string;
+      args: unknown;
+    }
   | { type: "end"; turn_id: string; reason: "done" | "aborted" | "error"; error?: string };
+
+/** 工具审批模式（后端 PermissionMode 镜像）。 */
+export type PermissionMode = "auto" | "write" | "all";
+
+/** 审批模式展示元数据。 */
+export const PERMISSION_MODES: {
+  value: PermissionMode;
+  label: string;
+  desc: string;
+}[] = [
+  { value: "auto", label: "免审批", desc: "所有工具直接执行（默认）" },
+  { value: "write", label: "写操作审批", desc: "查询类放行；创建/修改/删除与 MCP 工具需批准" },
+  { value: "all", label: "全部审批", desc: "每个工具调用都需人工批准" },
+];
+
+// —— Skills / MCP（对齐 mosh-core::agent::{skills, mcp}）——
+
+/** 一条技能定义（启用后 prompt 追加到系统提示词）。 */
+export interface SkillDef {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  builtin: boolean;
+}
+
+/** 技能 + 启用状态（后端 SkillInfo 扁平化）。 */
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  builtin: boolean;
+  active: boolean;
+}
+
+/** MCP 服务器配置（Streamable HTTP 端点）。 */
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  url: string;
+  token?: string | null;
+  enabled: boolean;
+}
