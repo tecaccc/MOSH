@@ -1,27 +1,44 @@
 # MOSH
 
-本地优先（local-first）的桌面个人信息管理应用：待办、日程（日历），未来扩展笔记与外部集成。数据落地本地 SQLite，可自托管同步。前端 SvelteKit + Svelte 5，桌面壳 Tauri 2（Rust）。
+本地优先（local-first）的桌面个人信息管理应用：待办、日程（日历）、天气与 AI 助手。数据落地本地 SQLite，不依赖云端服务。前端 React 19，桌面壳 Tauri 2（Rust）。
+
+## 功能
+
+- **待办**：创建 / 编辑 / 软删、子任务（一层嵌套）、优先级、截止时间、完成状态
+- **日程（日历）**：月 / 周 / 日 / 议程四视图；定时与全天事件；周期重复（daily / weekly / monthly / yearly）；提前提醒（`reminder_minutes`）；农历与节气显示
+- **首页仪表盘**：天气 + 时钟 + 问候 Banner、统计卡、日程安排（30 天按日分组）、待办事项卡、迷你月历
+- **天气**：首页展示（Open-Meteo，按城市配置）
+- **AI 助手**：
+  - OpenAI 兼容端点（DeepSeek / 通义 / Kimi / Ollama…），官方预置可改地址与模型，亦支持自定义多提供商
+  - 自然语言操作待办与日程（创建 / 查询 / 修改 / 删除），流式输出
+  - **Skills**：内置 + 自定义技能，启用后注入系统提示词
+  - **MCP**：接入 Streamable HTTP 外部工具服务器，工具注入模型
+  - **权限管理**：工具审批三模式（免审批 / 写操作审批 / 全部审批），调用前人工批准
+  - 会话管理：历史会话、删除、标题栏开关
 
 ## 技术栈
 
-- **前端**：SvelteKit（SPA）+ Svelte 5 runes + TypeScript + Vite
+- **前端**：React 19 + TypeScript + Vite + zustand + CSS Modules；Markdown 渲染用 `streamdown`，农历用 `lunar-typescript`，提供商图标用 `@lobehub/icons`
 - **桌面壳**：Tauri 2（Rust），命令层为薄壳，领域逻辑在 `mosh-core`
-- **核心域**：Cargo workspace —— `crates/mosh-core`（model / storage / service），`src-tauri`（`#[tauri::command]` 适配）
-- **存储**：SQLite（rusqlite bundled），`app_data_dir/mosh.sqlite`
+- **核心域**：Cargo workspace —— `crates/mosh-core`（model / storage / service / weather / agent），`src-tauri`（`#[tauri::command]` 适配）
+- **存储**：SQLite（rusqlite bundled），`app_data_dir/mosh.sqlite`；AI 配置与技能/MCP 等存 `settings` 表
 
 ## 目录结构
 
 ```
-src/                        SvelteKit 前端
-  lib/
-    components/             UI 组件（calendar/ 下为日历四视图）
-    store.svelte.ts         待办全局状态（runes）
-    calendar.svelte.ts      日历全局状态
-    datetime.ts             日期/时间工具
-    calendar-grid.ts        纯日历网格运算（周一首）
-    ipc.ts / types.ts       Tauri IPC 封装 + 后端类型镜像
+src/                        React 前端（Vite）
+  components/               UI 组件（calendar/ 下为日历四视图）
+  state/                    zustand 全局状态（store / calendar / weather / agent / reminder / dialog）
+  lib/                      纯工具与类型（calendar-grid / datetime / lunar / ipc / types / weather-code …）
+  styles/                   全局样式（global.css / markdown-chat.css）
+  App.tsx                   根组件（视图切换 + 编辑器 + 全局宿主）
 src-tauri/                  Tauri 壳（命令 → mosh-core）
-crates/mosh-core/           领域核心（model / storage / service）
+crates/mosh-core/           领域核心
+  src/model.rs              统一记录模型（todo / event 共用 records 表）
+  src/storage.rs            SQLite 存取与迁移
+  src/service.rs            领域服务（创建/更新/软删/状态机）
+  src/weather.rs            天气（Open-Meteo）
+  src/agent/                AI 助手（llm / runner / tools / skills / mcp / events）
 ```
 
 ## 环境要求
@@ -44,11 +61,11 @@ npm run tauri dev          # 启动桌面应用（热更新）；仅前端用 np
 ```bash
 cargo test -p mosh-core                       # 核心单测
 cargo clippy -p mosh-core -- -D warnings      # 核心 lint
-npm run check                                 # 前端类型检查
-npm run build                                 # 前端构建（权威门，见下）
+npm run check                                 # 前端类型检查（tsc --noEmit）
+npm run build                                 # 前端构建（Vite，产物到 build/）
 ```
 
-> `npm run check`（类型级）查不出 Svelte 5 模块导出的运行时规则（`state_invalid_export` / `derived_invalid_export`）。**凡改动 `*.svelte.ts`，务必以 `npm run build` 为准。**
+> 前端改动以 `npm run check`（类型）+ `npm run build`（构建）共同为准；Rust 改动以 `cargo test` + `cargo clippy` 为准。
 
 ## 构建（原生）
 
@@ -125,4 +142,4 @@ cargo clippy --target x86_64-pc-windows-gnu --all-targets -- -D warnings
 
 ## IDE
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+[VS Code](https://code.visualstudio.com/) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)（前端为 React + TS，VS Code 内置支持即可）
