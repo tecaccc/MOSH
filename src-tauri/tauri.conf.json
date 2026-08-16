@@ -24,7 +24,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwMDkzNEY0Qjg1QzZBNzMKUldSemFseTQ5RFFKNE9HTjQ0WTdVZ1FwTjV4VVJvWGdkRFlrSE41dTRZWk5BRmZ6akJ4SzhLZlgK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUzOTk3RDgzOUIzOENGOEEKUldTS3p6aWJnMzJaNDd1Tzh3SzNBb3hXaEhyNGVPMnNtRloxd3ZiZ1VaeXcrNW9IemVrVlZHODIK",
       "endpoints": [
         "https://github.com/tecaccc/MOSH/releases/latest/download/latest.json"
       ]
