@@ -2249,7 +2249,7 @@ dependencies = [
 
 [[package]]
 name = "mosh"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "mosh-core",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "mosh-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "futures-util",
