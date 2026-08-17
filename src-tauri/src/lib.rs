@@ -1120,7 +1120,15 @@ fn build_tray(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // 单实例锁：重复点击桌面图标时，新进程检测到已有实例后立即退出，
+    // 并唤起旧实例的主窗口（配合「后台驻留」模式：驻留托盘的旧实例被顶到
+    // 前台，而非再开一个进程堆在后台）。插件仅支持桌面端，且需最先注册。
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        show_main(app);
+    }));
+    builder
         .plugin(tauri_plugin_opener::init())
         // 自动更新：endpoints/pubkey 在 tauri.conf.json plugins.updater 配置；
         // process 插件供前端 relaunch（安装完成后重启进入新版本）。
