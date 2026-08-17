@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { formatCompletedAt } from "../lib/datetime";
+import { formatCompletedAt, formatDayShort, formatTime } from "../lib/datetime";
 import { priorityOf, subtasksOf, useAppStore } from "../state/store";
 import { useDialogStore } from "../state/dialog";
 import type { Record as RecordT, Status } from "../lib/types";
@@ -17,14 +17,6 @@ const PRIO_CLASS: Record<string, string> = {
   medium: styles.pMedium,
   high: styles.pHigh,
 };
-
-function formatDue(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 export default function TodoItem({ record }: { record: RecordT }) {
   const records = useAppStore((s) => s.records);
@@ -45,7 +37,11 @@ export default function TodoItem({ record }: { record: RecordT }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const dueLabel = formatDue(record.end_at);
+  // 跨天待办：创建日（必显）+ 可选截止（逾期红显）；完成态展示完成时间点。
+  const createdLabel = formatDayShort(record.created_at);
+  const dueLabel = record.end_at
+    ? `${formatDayShort(record.end_at)} ${formatTime(record.end_at)}`
+    : "";
   const completedLabel = formatCompletedAt(record.data.completed_at);
   const overdue = useMemo(() => {
     if (!record.end_at || record.status === "done") return false;
@@ -128,9 +124,16 @@ export default function TodoItem({ record }: { record: RecordT }) {
 
         {isDone && completedLabel ? (
           <span className={`${styles.due} ${styles.completed}`} title="完成时间点">✓ {completedLabel}</span>
-        ) : dueLabel ? (
-          <span className={`${styles.due}${overdue ? ` ${styles.overdue}` : ""}`}>{dueLabel}</span>
-        ) : null}
+        ) : (
+          <>
+            {createdLabel ? (
+              <span className={`${styles.due} ${styles.created}`} title="创建日期">创建 {createdLabel}</span>
+            ) : null}
+            {dueLabel ? (
+              <span className={`${styles.due}${overdue ? ` ${styles.overdue}` : ""}`} title="截止时间">截止 {dueLabel}</span>
+            ) : null}
+          </>
+        )}
 
         {record.tags.length > 0 ? (
           <span className={styles.tags}>

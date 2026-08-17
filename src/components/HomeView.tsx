@@ -4,9 +4,11 @@ import { formatDate, formatTime, toDateOnly } from "../lib/datetime";
 import { lunarDay, lunarFull, lunarYearMonth } from "../lib/lunar";
 import { useAppStore } from "../state/store";
 import { editingEventOf, useCalendarStore } from "../state/calendar";
+import { useProfileStore } from "../state/profile";
 import { useWeatherStore } from "../state/weather";
 import { WEATHER_ICONS, weatherInfo, type WeatherIcon } from "../lib/weather-code";
 import type { Priority, Record as RecordT } from "../lib/types";
+import Avatar from "./Avatar";
 import styles from "./HomeView.module.css";
 
 /**
@@ -22,7 +24,6 @@ const tomorrow = addDays(today, 1);
 const SCHEDULE_DAYS = 30;
 const pad = (n: number): string => String(n).padStart(2, "0");
 const DOW = "日一二三四五六";
-const USER_NAME = "Connor";
 const round = Math.round;
 
 const NOTES_STAT = { value: "12", sub: "3 篇未归档" };
@@ -94,6 +95,9 @@ export default function HomeView() {
   const records = useAppStore((s) => s.records);
   const setTodoStatus = useAppStore((s) => s.setTodoStatus);
   const startEdit = useAppStore((s) => s.startEdit);
+  // 个人资料（可配置名称/头像；未配置时问候不带称呼 + 首字圆标兑底）。
+  const profileName = useProfileStore((s) => s.name);
+  const profileAvatar = useProfileStore((s) => s.avatar);
   const renderEvents = useCalendarStore((s) => s.renderEvents);
   const editingId = useCalendarStore((s) => s.editingId);
   const loadEvents = useCalendarStore((s) => s.loadEvents);
@@ -309,7 +313,12 @@ export default function HomeView() {
               <div className={styles["date-sub"]}>{bigDate} {dayLine}</div>
             </div>
           </div>
-          <div className={styles.greeting}>{greeting}，{USER_NAME} 👋  今天有什么计划？</div>
+          <div className={styles["greet-line"]}>
+            <Avatar name={profileName} avatar={profileAvatar} size={44} />
+            <div className={styles.greeting}>
+              {profileName ? `${greeting}，${profileName}` : greeting} 👋&nbsp; 今天有什么计划？
+            </div>
+          </div>
         </div>
         <div
           className={styles["banner-art"]}

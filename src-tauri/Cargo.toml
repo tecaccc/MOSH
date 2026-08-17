@@ -17,7 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,3 +30,5 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # 系统通知：日程提醒/待办到期时经 OS 通知中心告知（应用内 Toast 之外的补充）。
 tauri-plugin-notification = "2"
+# 启动期配置文件（config.toml，自定义数据目录等）。
+toml = "0.8"

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { fromLocalInput, formatCompletedAt, toLocalInput } from "../lib/datetime";
+import { formatCompletedAt, formatDateTime, fromLocalInput, toLocalInput } from "../lib/datetime";
 import { subtasksOf, useAppStore } from "../state/store";
 import { useDialogStore } from "../state/dialog";
 import type { Priority, Record as RecordT, Status } from "../lib/types";
@@ -211,7 +211,7 @@ export default function TodoEditor({ record }: { record: RecordT | null }) {
 
       <div className={styles.row}>
         <label className={styles.field}>
-          <span className={styles.label}>截止日期</span>
+          <span className={styles.label}>截止时间（可不填）</span>
           <input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
         </label>
 
@@ -228,6 +228,10 @@ export default function TodoEditor({ record }: { record: RecordT | null }) {
 
       {!isNew ? (
         <div className={styles.row}>
+          <div className={styles.field}>
+            <span className={styles.label}>创建于</span>
+            <div className={styles["completed-at"]}>{formatDateTime(record.created_at)}</div>
+          </div>
           <label className={styles.field}>
             <span className={styles.label}>状态</span>
             <select value={status} onChange={(e) => setStatus(e.target.value as Status)}>

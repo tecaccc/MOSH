@@ -19,6 +19,12 @@
   gap: 24px;
   flex-wrap: wrap;
 }
+.greet-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
 .greet-col {
   display: flex;
   flex-direction: column;

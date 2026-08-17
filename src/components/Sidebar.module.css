@@ -14,6 +14,17 @@
   align-items: center;
   gap: 10px;
   padding: 4px 6px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  min-width: 0;
+  text-align: left;
+}
+
+.brand:hover {
+  background: var(--surface-2);
 }
 
 .mark {
@@ -27,6 +38,7 @@
   justify-content: center;
   font-size: 16px;
   font-weight: 700;
+  flex-shrink: 0;
 }
 
 .wordmark {
@@ -34,6 +46,9 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav {
@@ -93,6 +108,11 @@
   .label,
   .kbd-hint {
     display: none;
+  }
+
+  .brand {
+    justify-content: center;
+    padding: 4px 0;
   }
 
   .nav-item {

@@ -614,11 +614,169 @@
     cursor: not-allowed;
   }
 
-  /* ====== 底部 toast 通知 ====== */
+  /* ====== 通用分区：关闭行为选项卡 ====== */
+  .cb-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+
+  .cb-item + .cb-item {
+    margin-top: 10px;
+  }
+
+  .cb-item:hover {
+    border-color: var(--text-muted);
+  }
+
+  .cb-item.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .cb-radio {
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 2px solid var(--text-muted);
+    position: relative;
+    transition: border-color 0.15s ease;
+  }
+
+  .cb-item.active .cb-radio {
+    border-color: var(--accent);
+  }
+
+  .cb-item.active .cb-radio::after {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .cb-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .cb-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .cb-desc {
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  /* ====== 个人资料分区 ====== */
+  .pf-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .pf-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .pf-emoji {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .pf-emoji-btn {
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.1s ease;
+  }
+
+  .pf-emoji-btn:hover {
+    border-color: var(--accent);
+    transform: scale(1.06);
+  }
+
+  .pf-emoji-btn.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+
+  .pf-save {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 4px;
+  }
+
+  /* 数据目录/配置文件行：路径 + 打开按钮 */
+  .store-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex-shrink: 1;
+    justify-content: flex-end;
+  }
+
+  .store-path {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+
+  .pf-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    margin-left: 6px;
+    vertical-align: 1px;
+  }
+
+  .pf-badge-on {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  /* ====== 顶部 toast 通知（从上往下弹出） ====== */
   .toast {
     position: fixed;
     left: 50%;
-    bottom: 32px;
+    top: 64px;
     transform: translateX(-50%);
     display: flex;
     align-items: center;
@@ -631,7 +789,7 @@
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
     font-size: 13px;
     z-index: 200;
-    animation: toast-in 0.18s ease-out;
+    animation: toast-in 0.22s ease-out;
   }
 
   .toast.ok .toast-ico {
@@ -654,7 +812,7 @@
   @keyframes toast-in {
     from {
       opacity: 0;
-      transform: translate(-50%, 8px);
+      transform: translate(-50%, -10px);
     }
     to {
       opacity: 1;

@@ -1,8 +1,5 @@
 .updater {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 320;
+  pointer-events: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -13,7 +10,7 @@
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-md);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
-  animation: rise-in 0.18s ease-out;
+  animation: drop-in 0.22s ease-out;
 }
 
 .updater.err {
@@ -114,10 +111,11 @@
   cursor: default;
 }
 
-@keyframes rise-in {
+/* 卡片置于 App 顶部 toast 图层内：无固定定位，从上落下。 */
+@keyframes drop-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(-10px);
   }
   to {
     opacity: 1;

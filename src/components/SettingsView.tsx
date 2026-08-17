@@ -1,5 +1,6 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
 import { getName, getTauriVersion, getVersion } from "@tauri-apps/api/app";
+import { openPath } from "@tauri-apps/plugin-opener";
 // 深路径引入单个图标（仅 12 家；barrel 的 ProviderIcon/ModelIcon 会拉全量 4MB+）。
 import Anthropic from "@lobehub/icons/es/Anthropic";
 import DeepSeek from "@lobehub/icons/es/DeepSeek";
@@ -15,19 +16,25 @@ import XAI from "@lobehub/icons/es/XAI";
 import Zhipu from "@lobehub/icons/es/Zhipu";
 import { CITIES } from "../lib/cities";
 import { McpPane, SkillsPane } from "./AgentToolsSettings";
+import Avatar from "./Avatar";
 import {
   deleteAiProvider,
+  getCloseBehavior,
+  getStorageInfo,
   listAiModels,
   listAiProviders,
   saveAiProvider,
+  setCloseBehavior as setCloseBehaviorIpc,
   testAiConnection,
 } from "../lib/ipc";
 import { WEATHER_ICONS, weatherInfo, type WeatherIcon } from "../lib/weather-code";
-import type { AiConfig } from "../lib/types";
+import type { AiConfig, CloseBehavior, StorageInfo } from "../lib/types";
 import { useAgentStore } from "../state/agent";
 import { useAppStore, type SettingsSection } from "../state/store";
+import { useProfileStore } from "../state/profile";
 import { useUpdaterStore } from "../state/updater";
 import { useWeatherStore } from "../state/weather";
+import { CLOSE_BEHAVIORS } from "../lib/types";
 import styles from "./SettingsView.module.css";
 
 /**
@@ -96,6 +103,9 @@ function WeatherIcon({ name }: { name: WeatherIcon }) {
 
 /** 选择状态：固定预置 `builtin:名称` / 自定义 `custom:名称` / null=新增自定义。 */
 type Selection = `builtin:${string}` | `custom:${string}` | null;
+
+/** 头像快捷表情预设。 */
+const PROFILE_EMOJIS = ["🦊", "🐼", "🐱", "🚀", "⭐", "🌙", "🌸", "🧋"];
 
 export default function SettingsView() {
   // 惰性初始化：深链目标直接作为初始分区/面板，避免先闪一帧默认页。
@@ -172,6 +182,46 @@ export default function SettingsView() {
 
   function showToast(ok: boolean, text: string) {
     setToast({ ok, text });
+  }
+
+  // —— 个人资料（名称/头像；首页与今日问候展示）——
+  const profileStoreName = useProfileStore((s) => s.name);
+  const profileStoreAvatar = useProfileStore((s) => s.avatar);
+  const profileLoaded = useProfileStore((s) => s.loaded);
+  const [pfName, setPfName] = useState("");
+  const [pfAvatar, setPfAvatar] = useState<string | null>(null);
+  // store 载入完成后同步表单初值（仅一次；后续编辑不受 store 更新影响）。
+  useEffect(() => {
+    if (profileLoaded) {
+      setPfName(profileStoreName);
+      setPfAvatar(profileStoreAvatar);
+    }
+  }, [profileLoaded]);
+
+  /** 选图转 data URL（限 1.5MB，与后端校验一致）。 */
+  function onPickAvatar(file: File | undefined) {
+    if (!file) return;
+    if (file.size > 1_500_000) {
+      showToast(false, "图片过大，请选择小于 1.5MB 的图片");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setPfAvatar(typeof reader.result === "string" ? reader.result : null);
+    reader.readAsDataURL(file);
+  }
+
+  async function onProfileSave() {
+    const name = pfName.trim();
+    if (!name) {
+      showToast(false, "名称不能为空");
+      return;
+    }
+    try {
+      await useProfileStore.getState().save(name, pfAvatar);
+      showToast(true, "个人资料已保存");
+    } catch (e) {
+      showToast(false, e instanceof Error ? e.message : String(e));
+    }
   }
 
   /** 把固定预置载入表单：预置默认值 + 已保存的覆盖（地址/模型均可改）。 */
@@ -372,11 +422,29 @@ export default function SettingsView() {
     }
   }
 
+  // —— 通用（关闭行为等） ——
+  const [closeBehavior, setCloseBehavior] = useState<CloseBehavior>("exit");
+  useEffect(() => {
+    void getCloseBehavior().then(setCloseBehavior);
+  }, []);
+
+  async function onCloseBehaviorChange(b: CloseBehavior) {
+    setCloseBehavior(b);
+    try {
+      await setCloseBehaviorIpc(b);
+    } catch (e) {
+      showToast(false, e instanceof Error ? e.message : String(e));
+      setCloseBehavior(b === "exit" ? "background" : "exit");
+    }
+  }
+
   // —— 关于 ——
   const [appName, setAppName] = useState("MOSH");
   const [appVersion, setAppVersion] = useState("");
   const [tauriVersion, setTauriVersion] = useState("");
   const [platform, setPlatform] = useState("");
+  /** 数据目录与配置文件位置（打开目录/展示用）。 */
+  const [storage, setStorage] = useState<StorageInfo | null>(null);
   const updaterPhase = useUpdaterStore((s) => s.phase);
 
   async function loadAbout() {
@@ -390,6 +458,7 @@ export default function SettingsView() {
       setAppVersion(__APP_VERSION__);
       return;
     }
+    void getStorageInfo().then(setStorage);
     try {
       const [n, v, t] = await Promise.all([getName(), getVersion(), getTauriVersion()]);
       setAppName(n);
@@ -421,6 +490,36 @@ export default function SettingsView() {
         <div className={styles["nav-header"]}>设置</div>
 
         <div className={styles["nav-group"]}>
+          <button
+            type="button"
+            className={`${styles["nav-item"]}${activeSection === "general" ? ` ${styles.active}` : ""}`}
+            onClick={() => setActiveSection("general")}
+          >
+            <span className={styles["nav-ico"]}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+                <circle cx="9" cy="6" r="2" fill="var(--surface)" />
+                <circle cx="15" cy="12" r="2" fill="var(--surface)" />
+                <circle cx="8" cy="18" r="2" fill="var(--surface)" />
+              </svg>
+            </span>
+            <span className={styles["nav-label"]}>通用</span>
+          </button>
+
+          <button
+            type="button"
+            className={`${styles["nav-item"]}${activeSection === "profile" ? ` ${styles.active}` : ""}`}
+            onClick={() => setActiveSection("profile")}
+          >
+            <span className={styles["nav-ico"]}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+                <circle cx="12" cy="8" r="4" />
+                <path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5" />
+              </svg>
+            </span>
+            <span className={styles["nav-label"]}>个人资料</span>
+          </button>
+
           <button
             type="button"
             className={`${styles["nav-item"]}${activeSection === "weather" ? ` ${styles.active}` : ""}`}
@@ -605,6 +704,124 @@ export default function SettingsView() {
       ) : null}
 
       <div className={styles["content-panel"]}>
+        {activeSection === "general" ? (
+          <div className={styles["content-scroll"]}>
+            <div className={styles["content-body"]}>
+              <div className={styles["content-header"]}>
+                <div className={styles["content-title"]}>通用</div>
+                <div className={styles["content-desc"]}>窗口与行为偏好。</div>
+              </div>
+
+              <div className={styles.sgroup}>
+                <div className={styles.stitle}>关闭按钮行为</div>
+                <div className={styles.sdivider} />
+                {CLOSE_BEHAVIORS.map((it) => (
+                  <button
+                    key={it.value}
+                    type="button"
+                    className={`${styles["cb-item"]}${closeBehavior === it.value ? ` ${styles.active}` : ""}`}
+                    onClick={() => void onCloseBehaviorChange(it.value)}
+                  >
+                    <span className={styles["cb-radio"]} aria-hidden="true" />
+                    <span className={styles["cb-text"]}>
+                      <span className={styles["cb-label"]}>{it.label}</span>
+                      <span className={styles["cb-desc"]}>{it.desc}</span>
+                    </span>
+                  </button>
+                ))}
+                <div className={styles.sdivider} />
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {activeSection === "profile" ? (
+          <div className={styles["content-scroll"]}>
+            <div className={styles["content-body"]}>
+              <div className={styles["content-header"]}>
+                <div className={styles["content-title"]}>个人资料</div>
+                <div className={styles["content-desc"]}>
+                  名称与头像用于首页与今日页的问候展示；仅存本地，不上传。
+                </div>
+              </div>
+
+              <div className={styles.sgroup}>
+                <div className={styles.stitle}>头像</div>
+                <div className={styles.sdivider} />
+                <div className={styles["pf-row"]}>
+                  <Avatar name={pfName} avatar={pfAvatar} size={64} />
+                  <div className={styles["pf-actions"]}>
+                    <label className={`${styles["ai-btn"]}`}>
+                      上传图片
+                      <input
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        onChange={(e) => {
+                          onPickAvatar(e.currentTarget.files?.[0]);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                    {pfAvatar ? (
+                      <button
+                        type="button"
+                        className={`${styles["ai-btn"]} ${styles.danger}`}
+                        onClick={() => setPfAvatar(null)}
+                      >
+                        恢复默认
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <div className={styles["pf-emoji"]}>
+                  {PROFILE_EMOJIS.map((em) => (
+                    <button
+                      key={em}
+                      type="button"
+                      className={`${styles["pf-emoji-btn"]}${pfAvatar === `emoji:${em}` ? ` ${styles.active}` : ""}`}
+                      onClick={() => setPfAvatar(`emoji:${em}`)}
+                      aria-label={`使用表情 ${em} 作为头像`}
+                    >
+                      {em}
+                    </button>
+                  ))}
+                </div>
+                <div className={styles.sdivider} />
+
+                <div className={styles.stitle}>名称</div>
+                <div className={styles.sdivider} />
+                <div className={styles.srow}>
+                  <div className={styles["srow-label"]}>
+                    <span className={styles["srow-name"]}>展示名称</span>
+                    <span className={styles["srow-hint"]}>
+                      问候语展示用；未设置时问候不带称呼。
+                    </span>
+                  </div>
+                  <input
+                    className={styles["srow-input"]}
+                    value={pfName}
+                    placeholder="如：Connor"
+                    maxLength={24}
+                    onChange={(e) => setPfName(e.currentTarget.value)}
+                  />
+                </div>
+                <div className={styles.sdivider} />
+
+                <div className={styles["pf-save"]}>
+                  <button
+                    type="button"
+                    className={`${styles["ai-btn"]} ${styles.primary}`}
+                    onClick={() => void onProfileSave()}
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {activeSection === "weather" ? (
           <div className={styles["content-scroll"]}>
             <div className={styles["content-body"]}>
@@ -958,6 +1175,65 @@ export default function SettingsView() {
                   </div>
                 </div>
               </div>
+
+              {/* 数据与配置：数据库位置 + config.toml（自定义 data_dir 重启生效） */}
+              {storage ? (
+                <div className={styles.sgroup}>
+                  <div className={styles.stitle}>数据与配置</div>
+                  <div className={styles.sdivider} />
+                  <div className={styles.srow}>
+                    <div className={styles["srow-label"]}>
+                      <span className={styles["srow-name"]}>
+                        数据目录
+                        <span
+                          className={`${styles["pf-badge"]}${storage.customized ? ` ${styles["pf-badge-on"]}` : ""}`}
+                        >
+                          {storage.customized ? "自定义" : "默认"}
+                        </span>
+                      </span>
+                      <span className={styles["srow-hint"]}>数据库 mosh.sqlite 所在文件夹。</span>
+                    </div>
+                    <div className={styles["store-actions"]}>
+                      <span className={`${styles["store-path"]} ${styles.mono}`} title={storage.data_dir}>
+                        {storage.data_dir}
+                      </span>
+                      <button
+                        type="button"
+                        className={styles["ai-btn"]}
+                        onClick={() => {
+                          if (inTauri) void openPath(storage.data_dir).catch(() => {});
+                        }}
+                      >
+                        打开
+                      </button>
+                    </div>
+                  </div>
+                  <div className={styles.sdivider} />
+                  <div className={styles.srow}>
+                    <div className={styles["srow-label"]}>
+                      <span className={styles["srow-name"]}>配置文件</span>
+                      <span className={styles["srow-hint"]}>
+                        编辑其中 data_dir 可自定义数据目录（支持 ~ 开头），修改后重启生效。
+                      </span>
+                    </div>
+                    <div className={styles["store-actions"]}>
+                      <span className={`${styles["store-path"]} ${styles.mono}`} title={storage.config_path}>
+                        {storage.config_path}
+                      </span>
+                      <button
+                        type="button"
+                        className={styles["ai-btn"]}
+                        onClick={() => {
+                          if (inTauri) void openPath(storage.config_path).catch(() => {});
+                        }}
+                      >
+                        打开
+                      </button>
+                    </div>
+                  </div>
+                  <div className={styles.sdivider} />
+                </div>
+              ) : null}
 
               {/* 软件更新：手动检查（启动后也会自动静默检查一次） */}
               <div className={styles.sgroup}>

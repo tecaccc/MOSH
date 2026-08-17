@@ -67,6 +67,22 @@ npm run build                                 # 前端构建（Vite，产物到 
 
 > 前端改动以 `npm run check`（类型）+ `npm run build`（构建）共同为准；Rust 改动以 `cargo test` + `cargo clippy` 为准。
 
+## 数据目录自定义
+
+数据（SQLite 数据库 `mosh.sqlite`）默认存于系统应用数据目录（Linux `~/.local/share/com.mosh.app`，macOS `~/Library/Application Support/com.mosh.app`，Windows `%APPDATA%\com.mosh.app`）。
+
+如需自定义，编辑**配置文件**（首次启动自动生成，位于系统配置目录，如 Linux `~/.config/com.mosh.app/config.toml`）的 `data_dir`，修改后重启生效：
+
+```toml
+# 支持绝对路径或 ~ 开头；留空/删除 = 系统默认
+data_dir = "~/MOSHData"
+```
+
+- 优先级：环境变量 `MOSH_DATA_DIR` > `config.toml` > 系统默认；
+- 自定义目录不可用时回退系统默认并弹系统通知告警；
+- 切换目录不会自动迁移旧数据，如需保留请自行复制旧数据库文件；
+- 设置 → 关于可查看当前数据目录与配置文件位置并一键打开。
+
 ## 构建（原生）
 
 ```bash

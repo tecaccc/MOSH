@@ -1,0 +1,29 @@
+/* 用户头像：图片 / emoji / 首字圆标三形态。 */
+
+.emoji,
+.initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.emoji {
+  background: var(--accent-soft);
+  line-height: 1;
+}
+
+.initial {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.img {
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--surface-1);
+}

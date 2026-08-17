@@ -71,3 +71,38 @@ body {
 * {
   box-sizing: border-box;
 }
+
+/* ===== 滚动条：去轨道框，仅保留滑块；默认隐藏，滚动进行中（.is-scrolling）显示 =====
+   .is-scrolling 由 App 根的全局委托 scroll 监听维护（停止约 0.7s 后移除）。
+   滑块常驻占位（宽度不变）避免出现/消失引起内容跳动。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+}
+
+.is-scrolling {
+  scrollbar-color: var(--border) transparent;
+}
+
+.is-scrolling::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.is-scrolling::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

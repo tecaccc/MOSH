@@ -13,6 +13,7 @@ import type {
   AgentMessage,
   AgentSessionSummary,
   AiConfig,
+  CloseBehavior,
   CurrentWeather,
   EventInput,
   McpServerConfig,
@@ -24,6 +25,8 @@ import type {
   SkillInfo,
   Status,
   TodoInput,
+  UserProfile,
+  StorageInfo,
   WeatherConfig,
 } from "./types";
 
@@ -100,6 +103,42 @@ export async function setCity(query: string): Promise<void> {
  */
 export async function getCurrentWeather(): Promise<CurrentWeather | null> {
   return invoke<CurrentWeather | null>("get_current_weather");
+}
+
+// —— 个人资料（首页/今日问候与头像展示） ——
+
+/** 读个人资料；未配置返回 null（前端用默认展示）。 */
+export async function getProfile(): Promise<UserProfile | null> {
+  return invoke<UserProfile | null>("get_profile");
+}
+
+/** 保存个人资料（名称非空；头像 data URL 或 emoji: 前缀）。 */
+export async function setProfile(profile: UserProfile): Promise<void> {
+  await invoke<void>("set_profile", { profile });
+}
+
+/** 数据目录与配置文件位置（修改 config.toml 后重启生效）。 */
+export async function getStorageInfo(): Promise<StorageInfo | null> {
+  try {
+    return await invoke<StorageInfo>("get_storage_info");
+  } catch {
+    return null; // 非 Tauri 环境
+  }
+}
+
+/** 读窗口关闭行为（exit/background；缺省 exit）。 */
+export async function getCloseBehavior(): Promise<CloseBehavior> {
+  try {
+    const v = await invoke<string>("get_close_behavior");
+    return v === "background" ? "background" : "exit";
+  } catch {
+    return "exit";
+  }
+}
+
+/** 写窗口关闭行为（即时生效；background 需托盘可用）。 */
+export async function setCloseBehavior(behavior: CloseBehavior): Promise<void> {
+  await invoke<void>("set_close_behavior", { behavior });
 }
 
 // —— Agent（08-15-agent-v1）——

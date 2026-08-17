@@ -152,6 +152,44 @@ export interface WeatherConfig {
   tz?: string | null;
 }
 
+// —— 个人资料（settings key=profile；首页/今日问候与头像展示用） ——
+
+/**
+ * 用户资料。`avatar` 为图片 data URL、`emoji:表情` 前缀或 null（名称首字圆标兑底）。
+ */
+export interface UserProfile {
+  name: string;
+  avatar?: string | null;
+}
+
+/** 数据目录与配置文件位置（启动期解析；设置页关于展示）。 */
+export interface StorageInfo {
+  data_dir: string;
+  config_path: string;
+  customized: boolean;
+}
+
+/** 窗口关闭按钮行为：exit=直接退出；background=隐藏窗口后台驻留（需托盘）。 */
+export type CloseBehavior = "exit" | "background";
+
+/** 关闭行为展示元数据。 */
+export const CLOSE_BEHAVIORS: {
+  value: CloseBehavior;
+  label: string;
+  desc: string;
+}[] = [
+  {
+    value: "exit",
+    label: "直接退出",
+    desc: "点击关闭按钮即退出程序（默认）",
+  },
+  {
+    value: "background",
+    label: "后台驻留",
+    desc: "隐藏窗口到系统托盘，待办/日程提醒继续；左键点击托盘图标恢复窗口（Linux 需托盘扩展支持，不可用时自动回退直接退出）",
+  },
+];
+
 // —— Agent（任务 08-15-agent-v1，镜像 mosh-core::agent）——
 
 /** AI 模型配置（OpenAI 兼容端点；settings key=`ai_model`）。 */

@@ -43,6 +43,20 @@
   font-size: 0.82rem;
 }
 
+/* 顶部提示图层：固定于标题栏下方右侧，卡片纵向堆叠（从上往下弹出）。
+   pointer-events none 让空白区域不挡点击，卡片自身 auto 恢复交互。 */
+.toast-layer {
+  position: fixed;
+  top: 48px;
+  right: 16px;
+  z-index: 320;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
 @media (max-width: 900px) {
   .app,
   .app:has(.editor-pane) {

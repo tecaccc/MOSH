@@ -49,6 +49,16 @@ export function formatDate(dateStr: string | null | undefined): string {
   return `${parseInt(mo, 10)}月${parseInt(da, 10)}日`;
 }
 
+/** ISO8601 → 日期短串（如 "8月13日"；跨年带年份如 "2025年12月30日"）。空/非法 → ""。 */
+export function formatDayShort(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+  return sameYear ? md : `${d.getFullYear()}年${md}`;
+}
+
 /** ISO8601 → 本地展示串（如 "8/13 09:00"）。空/非法 → ""。 */
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "";

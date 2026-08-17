@@ -5,12 +5,15 @@
 //! 把 `CoreError` 转成前端可读字符串。`State<SqliteStorage>` 在 `setup`
 //! 中由 `app_data_dir/mosh.sqlite` 打开并注入。
 
-use mosh_core::agent::{self, AgentEvent, AiConfig, LlmClient, McpServerConfig, SkillDef, TurnExtras};
+use mosh_core::agent::{
+    self, AgentEvent, AiConfig, LlmClient, McpServerConfig, SkillDef, TurnExtras,
+};
 use mosh_core::model::{EventInput, Record, RecordFilter, RecordPatch, Status, TodoInput};
 use mosh_core::service;
 use mosh_core::storage::{AgentMessage, AgentSessionSummary, SqliteStorage};
 use mosh_core::weather::{CurrentWeather, HttpClient, WeatherConfig};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -248,9 +251,7 @@ impl agent::ApprovalGate for SessionGate {
         call_id: &str,
         _tool: &str,
         _args: &serde_json::Value,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = bool> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         if let Ok(mut map) = self.pending.lock() {
             map.insert(call_id.to_string(), tx);
@@ -515,9 +516,7 @@ fn load_providers(state: &SqliteStorage) -> Result<Vec<AiConfig>, String> {
 
 /// 读激活配置（不含回退逻辑）。
 fn get_ai_config_inner(state: &SqliteStorage) -> Result<Option<AiConfig>, String> {
-    let json = state
-        .get_setting("ai_model")
-        .map_err(|e| e.to_string())?;
+    let json = state.get_setting("ai_model").map_err(|e| e.to_string())?;
     json.as_deref()
         .filter(|s| !s.is_empty())
         .map(serde_json::from_str)
@@ -637,15 +636,14 @@ fn list_agent_messages(
     state: State<'_, SqliteStorage>,
     session_id: String,
 ) -> Result<Vec<AgentMessage>, String> {
-    state.list_agent_messages(&session_id).map_err(|e| e.to_string())
+    state
+        .list_agent_messages(&session_id)
+        .map_err(|e| e.to_string())
 }
 
 /// 删除整个会话（含全部消息行）。
 #[tauri::command]
-fn delete_agent_session(
-    state: State<'_, SqliteStorage>,
-    session_id: String,
-) -> Result<(), String> {
+fn delete_agent_session(state: State<'_, SqliteStorage>, session_id: String) -> Result<(), String> {
     state
         .delete_agent_session(&session_id)
         .map(|_| ())
@@ -682,7 +680,9 @@ fn save_setting_value<T: serde::Serialize>(
     value: &T,
 ) -> Result<(), String> {
     let serialized = serde_json::to_string(value).map_err(|e| e.to_string())?;
-    state.set_setting(key, &serialized).map_err(|e| e.to_string())
+    state
+        .set_setting(key, &serialized)
+        .map_err(|e| e.to_string())
 }
 
 fn load_custom_skills(state: &SqliteStorage) -> Vec<SkillDef> {
@@ -764,7 +764,11 @@ fn delete_skill(id: String, state: State<'_, SqliteStorage>) -> Result<(), Strin
 
 /// 开/关技能（内置与自定义通用）。
 #[tauri::command]
-fn set_skill_active(id: String, active: bool, state: State<'_, SqliteStorage>) -> Result<(), String> {
+fn set_skill_active(
+    id: String,
+    active: bool,
+    state: State<'_, SqliteStorage>,
+) -> Result<(), String> {
     let mut ids = load_active_skill_ids(&state);
     if active {
         if !ids.contains(&id) {
@@ -826,7 +830,11 @@ fn delete_mcp_server(id: String, state: State<'_, SqliteStorage>) -> Result<(), 
 
 /// 总开关（聊天工具条快速启停）。
 #[tauri::command]
-fn set_mcp_enabled(id: String, enabled: bool, state: State<'_, SqliteStorage>) -> Result<(), String> {
+fn set_mcp_enabled(
+    id: String,
+    enabled: bool,
+    state: State<'_, SqliteStorage>,
+) -> Result<(), String> {
     let mut servers = load_mcp_servers(&state);
     let slot = servers
         .iter_mut()
@@ -853,6 +861,263 @@ async fn mcp_list_tools(base_url: String, token: Option<String>) -> Result<Vec<S
         .collect())
 }
 
+// —— 启动期配置文件（config.toml）：位于系统配置目录，不随数据目录移动 ——
+
+/// 配置文件名（位于 `app_config_dir()`）。
+const CONFIG_FILENAME: &str = "config.toml";
+
+/// 首次启动写入的配置模板（注释即文档；修改后重启生效）。
+const CONFIG_TEMPLATE: &str = r#"# MOSH 配置文件（修改后重启应用生效）
+#
+# data_dir：本地数据目录（数据库 mosh.sqlite 所在文件夹）。
+#   - 支持绝对路径，或以 ~ 开头（家目录）
+#   - 留空或删除该行 = 使用系统默认位置
+#   - 切换目录不会自动迁移旧数据，如需保留请自行复制旧数据库文件
+data_dir = ""
+"#;
+
+/// config.toml 可识别字段。缺文件/字段 → 默认行为。
+#[derive(Debug, Default, serde::Deserialize)]
+struct FileConfig {
+    data_dir: Option<String>,
+}
+
+/// 解析结果：数据目录 + 配置文件路径 + 是否为用户自定义。
+#[derive(Debug, Clone)]
+struct StoragePaths {
+    data_dir: PathBuf,
+    config_path: PathBuf,
+    customized: bool,
+}
+
+/// `~`/`~/...` 前缀展开为家目录（其余原样返回）。
+fn expand_home(app: &tauri::AppHandle, s: &str) -> PathBuf {
+    if s == "~" || s.starts_with("~/") {
+        if let Ok(home) = app.path().home_dir() {
+            let rest = s.trim_start_matches('~');
+            return home.join(rest.trim_start_matches('/'));
+        }
+    }
+    PathBuf::from(s)
+}
+
+/// 计算存储路径：环境变量 `MOSH_DATA_DIR` > config.toml `data_dir` > 系统默认。
+/// 配置文件不存在时写入模板（便于用户发现）；解析失败告警并回退默认（不阻塞启动）。
+fn resolve_storage_paths(app: &tauri::AppHandle) -> StoragePaths {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .expect("no app_config_dir available");
+    let config_path = config_dir.join(CONFIG_FILENAME);
+
+    // 首次运行写模板（已存在不动，避免覆盖用户修改）。
+    if !config_path.exists() {
+        if let Err(e) = std::fs::create_dir_all(&config_dir)
+            .and_then(|_| std::fs::write(&config_path, CONFIG_TEMPLATE))
+        {
+            eprintln!("[config] 写入模板失败（忽略）：{e}");
+        }
+    }
+
+    let default_dir = app
+        .path()
+        .app_data_dir()
+        .expect("no app_data_dir available");
+
+    // 优先级 1：环境变量（供高级用法/便携模式）。
+    let env_dir = std::env::var("MOSH_DATA_DIR")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    // 优先级 2：config.toml（解析失败告警并回退默认，不阻塞启动）。
+    let cfg_dir = if config_path.exists() {
+        match std::fs::read_to_string(&config_path) {
+            Ok(text) if !text.trim().is_empty() => match toml::from_str::<FileConfig>(&text) {
+                Ok(cfg) => cfg.data_dir,
+                Err(e) => {
+                    eprintln!("[config] config.toml 解析失败（回退默认）：{e}");
+                    None
+                }
+            },
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!("[config] config.toml 读取失败（回退默认）：{e}");
+                None
+            }
+        }
+    } else {
+        None
+    }
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+
+    let custom = env_dir.or(cfg_dir);
+    match custom {
+        Some(s) => {
+            let dir = expand_home(app, &s);
+            if dir.is_absolute() {
+                StoragePaths {
+                    data_dir: dir,
+                    config_path,
+                    customized: true,
+                }
+            } else {
+                eprintln!("[config] data_dir 需为绝对路径或 ~ 开头（当前值：{s}），回退默认");
+                StoragePaths {
+                    data_dir: default_dir,
+                    config_path,
+                    customized: false,
+                }
+            }
+        }
+        None => StoragePaths {
+            data_dir: default_dir,
+            config_path,
+            customized: false,
+        },
+    }
+}
+
+/// 数据目录信息（设置页「关于」展示 + 打开目录）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+struct StorageInfo {
+    data_dir: String,
+    config_path: String,
+    customized: bool,
+}
+
+#[tauri::command]
+fn get_storage_info(app: tauri::AppHandle) -> StorageInfo {
+    let p = resolve_storage_paths(&app);
+    StorageInfo {
+        data_dir: p.data_dir.to_string_lossy().into_owned(),
+        config_path: p.config_path.to_string_lossy().into_owned(),
+        customized: p.customized,
+    }
+}
+
+// —— 个人资料（settings key=`profile`）：首页/今日问候展示用 ——
+
+/// 用户资料：名称 + 头像。`avatar` 为图片 data URL 或 `emoji:` 前缀的表情；
+/// `None`/缺省时前端用名称首字符圆标兑底。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Profile {
+    name: String,
+    avatar: Option<String>,
+}
+
+/// 读个人资料；未配置返回 `None`（前端用默认展示）。
+#[tauri::command]
+fn get_profile(state: State<'_, SqliteStorage>) -> Result<Option<Profile>, String> {
+    let json = state.get_setting("profile").map_err(|e| e.to_string())?;
+    json.as_deref()
+        .filter(|s| !s.is_empty())
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| e.to_string())
+}
+
+/// 保存个人资料（名称非空；头像 data URL 限制约 1.5MB 原图，防 settings 行膨胀）。
+#[tauri::command]
+fn set_profile(mut profile: Profile, state: State<'_, SqliteStorage>) -> Result<(), String> {
+    profile.name = profile.name.trim().to_string();
+    if profile.name.is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+    if let Some(a) = profile.avatar.as_deref() {
+        if !a.starts_with("emoji:") && a.len() > 2_000_000 {
+            return Err("头像图片过大，请换用小于 1.5MB 的图片".to_string());
+        }
+    }
+    let serialized = serde_json::to_string(&profile).map_err(|e| e.to_string())?;
+    state
+        .set_setting("profile", &serialized)
+        .map_err(|e| e.to_string())
+}
+
+// —— 关闭行为 + 系统托盘（后台驻留模式）——
+
+/// 托盘是否可用（Linux 无 AppIndicator 时创建失败 → background 模式退化为直接退出，
+/// 避免窗口隐藏后无法找回）。
+#[derive(Default)]
+struct TrayState(std::sync::atomic::AtomicBool);
+
+/// 恢复主窗口（托盘左键点击 / 菜单「显示主窗口」）。
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+/// 读关闭行为（settings `close_behavior`；缺省 exit）。
+fn close_behavior_of(app: &tauri::AppHandle) -> String {
+    app.try_state::<SqliteStorage>()
+        .and_then(|st| st.get_setting("close_behavior").ok().flatten())
+        .unwrap_or_else(|| "exit".to_string())
+}
+
+/// 读关闭行为（前端展示用）。
+#[tauri::command]
+fn get_close_behavior(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(close_behavior_of(&app))
+}
+
+/// 写关闭行为（exit=直接退出；background=隐藏窗口驻留后台，需托盘可用）。
+#[tauri::command]
+fn set_close_behavior(behavior: String, state: State<'_, SqliteStorage>) -> Result<(), String> {
+    if behavior != "exit" && behavior != "background" {
+        return Err("关闭行为仅支持 exit / background".to_string());
+    }
+    state
+        .set_setting("close_behavior", &behavior)
+        .map_err(|e| e.to_string())
+}
+
+/// 建系统托盘（图标 + 菜单 + 左键点击恢复窗口）。失败时由调用方降级。
+fn build_tray(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(app, "quit", "退出 MOSH", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(app, &[&show, &quit]).map_err(|e| e.to_string())?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| "无默认窗口图标".to_string())?;
+
+    let mut tray = TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .tooltip("MOSH")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        })
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    tray.set_visible(true).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -863,14 +1128,72 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         // 系统通知：日程提醒/待办到期时经 OS 通知中心告知。
         .plugin(tauri_plugin_notification::init())
+        // 系统托盘：后台驻留模式下窗口隐藏后经托盘找回（左键点击恢复；
+        // 菜单提供「显示主窗口 / 退出」）。Linux 无 AppIndicator 时创建失败，
+        // 自动退化为「直接退出」模式。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                let tray_ok = app
+                    .try_state::<TrayState>()
+                    .map(|t| t.0.load(Ordering::Relaxed))
+                    .unwrap_or(false);
+                if close_behavior_of(app) == "background" && tray_ok {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                // 否则：默认行为（真正关闭；最后一个窗口关闭后应用退出）。
+            }
+        })
         .setup(|app| {
-            // 解析 app_data_dir，创建目录，打开（或新建）数据库并跑迁移。
-            // 启动期失败直接 panic 带清晰信息（v1 可接受）。
-            let dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&dir)?;
-            let db_path = dir.join("mosh.sqlite");
-            let storage = SqliteStorage::open(&db_path)
-                .expect("failed to open mosh database at app_data_dir/mosh.sqlite");
+            // 托盘可用性探测（失败仅降级不阻塞启动）。
+            let tray_ok = match build_tray(app.handle()) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("[tray] 初始化失败（后台驻留将不可用，回退直接退出）：{e}");
+                    false
+                }
+            };
+            app.manage(TrayState(std::sync::atomic::AtomicBool::new(tray_ok)));
+            // 解析数据目录（env MOSH_DATA_DIR > config.toml data_dir > 系统默认），
+            // 创建目录，打开（或新建）数据库并跑迁移。自定义目录不可用时回退默认
+            // 并系统通知告警（避免 GUI 下 panic 信息不可见）。启动期失败直接 panic
+            // 带清晰信息（v1 可接受）。
+            let handle = app.handle().clone();
+            let mut paths = resolve_storage_paths(&handle);
+            if paths.customized && std::fs::create_dir_all(&paths.data_dir).is_err() {
+                use tauri_plugin_notification::NotificationExt;
+                let bad = paths.data_dir.to_string_lossy().into_owned();
+                eprintln!("[config] 无法创建自定义数据目录 {bad}，回退系统默认");
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("MOSH：自定义数据目录不可用")
+                    .body(format!(
+                        "无法创建 {bad}，已回退系统默认目录。请检查 config.toml。"
+                    ))
+                    .show();
+                paths.data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .expect("no app_data_dir available");
+                paths.customized = false;
+            }
+            std::fs::create_dir_all(&paths.data_dir)?;
+            eprintln!(
+                "[storage] data_dir={} ({}), config={}",
+                paths.data_dir.display(),
+                if paths.customized {
+                    "自定义"
+                } else {
+                    "默认"
+                },
+                paths.config_path.display()
+            );
+            let db_path = paths.data_dir.join("mosh.sqlite");
+            let storage = SqliteStorage::open(&db_path).unwrap_or_else(|e| {
+                panic!("failed to open mosh database at {}: {e}", db_path.display())
+            });
             app.manage(storage);
             // HTTP 客户端（复用连接池）+ 天气内存缓存，注入给 async 命令。
             let client = HttpClient::builder()
@@ -895,6 +1218,11 @@ pub fn run() {
             get_weather_config,
             set_city,
             get_current_weather,
+            get_profile,
+            set_profile,
+            get_storage_info,
+            get_close_behavior,
+            set_close_behavior,
             agent_send,
             agent_abort,
             agent_approve,

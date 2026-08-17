@@ -1,7 +1,10 @@
 import { useAppStore, type View } from "../state/store";
+import { useProfileStore } from "../state/profile";
+import Avatar from "./Avatar";
 import styles from "./Sidebar.module.css";
 
-/** 左侧导航：紫色「M」标识 + 图标导航 + ⌘K 提示。直接读写 store，无 props。 */
+/** 左侧导航：用户头像/名称（未配置时回退 MOSH 标识）+ 图标导航 + ⌘K 提示。
+ *  直接读写 store，无 props。 */
 
 const items: { key: View; label: string }[] = [
   { key: "home", label: "首页" },
@@ -50,13 +53,33 @@ const icons: Record<View, React.ReactNode> = {
 export default function Sidebar() {
   const currentView = useAppStore((s) => s.currentView);
   const setView = useAppStore((s) => s.setView);
+  const openSettings = useAppStore((s) => s.openSettings);
+  const profileName = useProfileStore((s) => s.name);
+  const profileAvatar = useProfileStore((s) => s.avatar);
+  const profileLoaded = useProfileStore((s) => s.loaded);
+  // 已配置个人资料 → 头像 + 名称；未配置/未加载 → 回退 MOSH 标识。点击可编辑资料。
+  const personalized = profileLoaded && profileName.trim().length > 0;
 
   return (
     <aside className={styles.sidebar}>
-      <div className={styles.brand}>
-        <div className={styles.mark}>M</div>
-        <span className={styles.wordmark}>MOSH</span>
-      </div>
+      <button
+        type="button"
+        className={styles.brand}
+        title={personalized ? "编辑个人资料" : "设置个人资料"}
+        onClick={() => openSettings("profile")}
+      >
+        {personalized ? (
+          <>
+            <Avatar name={profileName} avatar={profileAvatar} size={28} />
+            <span className={styles.wordmark}>{profileName}</span>
+          </>
+        ) : (
+          <>
+            <span className={styles.mark}>M</span>
+            <span className={styles.wordmark}>MOSH</span>
+          </>
+        )}
+      </button>
 
       <nav className={styles.nav}>
         {items.map((it) => (

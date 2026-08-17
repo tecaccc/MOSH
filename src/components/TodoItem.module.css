@@ -66,6 +66,10 @@ input[type="checkbox"] {
   color: var(--text-dim);
 }
 
+.due.created {
+  color: var(--text-muted);
+}
+
 .due.overdue {
   color: var(--danger);
   font-weight: 600;

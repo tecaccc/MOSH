@@ -112,6 +112,12 @@
   font-size: 14px;
   color: var(--text-dim);
 }
+.greet-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+}
 .greeting {
   font-size: 20px;
   font-weight: 700;

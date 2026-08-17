@@ -3,7 +3,9 @@ import { addDays, todayOnly } from "../lib/calendar-grid";
 import { formatCompletedAt, formatTime } from "../lib/datetime";
 import { useAppStore } from "../state/store";
 import { editingEventOf, useCalendarStore } from "../state/calendar";
+import { useProfileStore } from "../state/profile";
 import type { Priority, Record as RecordT } from "../lib/types";
+import Avatar from "./Avatar";
 import styles from "./TodayView.module.css";
 
 /**
@@ -14,7 +16,6 @@ import styles from "./TodayView.module.css";
 const now = new Date();
 const today = todayOnly();
 const DOW = "日一二三四五六";
-const USER_NAME = "Connor";
 
 const greeting = (() => {
   const h = now.getHours();
@@ -139,6 +140,9 @@ export default function TodayView() {
   const records = useAppStore((s) => s.records);
   const setTodoStatusFn = useAppStore((s) => s.setTodoStatus);
   const startEdit = useAppStore((s) => s.startEdit);
+  // 个人资料（可配置名称/头像；未配置时问候不带称呼 + 首字圆标兑底）。
+  const profileName = useProfileStore((s) => s.name);
+  const profileAvatar = useProfileStore((s) => s.avatar);
   const renderEvents = useCalendarStore((s) => s.renderEvents);
   const loadEvents = useCalendarStore((s) => s.loadEvents);
   const editingId = useCalendarStore((s) => s.editingId);
@@ -229,10 +233,15 @@ export default function TodayView() {
     <section className={styles.today}>
       <header className={styles.head}>
         <div className={styles["greet-row"]}>
-          <div className={styles["greet-col"]}>
-            <div className={styles.greeting}>{greeting}，{USER_NAME.toUpperCase()}</div>
-            <h1 className={styles["big-title"]}>这是你的一天</h1>
-            <div className={styles["date-line"]}>{dateLine}</div>
+          <div className={styles["greet-left"]}>
+            <Avatar name={profileName} avatar={profileAvatar} size={52} />
+            <div className={styles["greet-col"]}>
+              <div className={styles.greeting}>
+                {profileName ? `${greeting}，${profileName}` : greeting}
+              </div>
+              <h1 className={styles["big-title"]}>这是你的一天</h1>
+              <div className={styles["date-line"]}>{dateLine}</div>
+            </div>
           </div>
           <div className={styles["head-stats"]}>
             <div className={styles.hs}>
