@@ -28,10 +28,17 @@ git push origin v0.2.0
 1. **test**：`npm run check`（tsc）+ `cargo test -p mosh-core`；
 2. **build**：macOS（arm64 + x64 双包）、Linux（AppImage/deb）、Windows（**NSIS 安装包**
    `mosh_x.y.z_x64-setup.exe`，简中/英文、可选仅当前用户/所有用户安装）并行构建，
-   产物与 `.sig` 签名自动上传到对应 Release，并生成 `latest.json`（updater 清单）。
+   产物与 `.sig` 签名自动上传到对应 Release；
+3. **updater**：全部构建完成后，`scripts/gen-updater-json.py` 基于Release 资产统一生成
+   `latest.json`（updater 清单）并上传。
 
 > Windows 正式分发形态即此安装包（不再分发裸 `mosh.exe` + DLL 的便携版）；
 > 应用内自动更新在 Windows 上也是静默重跑该安装包完成的。
+>
+> latest.json 之所以由独立的 updater 作业单点生成：矩阵作业并行时 tauri-action
+> 会对 latest.json 做“读-改-写”，后完成者会覆盖先完成者的平台条目（v0.1.1 曾
+> 因此丢失 windows 条目，Windows 端检查更新报 "None of the fallback platforms
+> ... were found"）。
 
 也可在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发。
 

@@ -47,6 +47,11 @@ jobs:
         run: cargo test -p mosh-core --locked
 
   # 构建 + 发布：tag 对应 Release（已存在则复用）；macOS 同机出 arm64/x64 双包。
+  # 注意：本作业只上传安装包与 .sig，不写 latest.json（includeUpdaterJson: false）。
+  # 矩阵并行时 tauri-action 各自对 latest.json 做“读-改-写”，无锁并发下后完成者
+  # 会覆盖先完成者的平台条目（v0.1.1 曾因此丢失 windows-x86_64-nsis，导致 Windows
+  # 端检查更新报 "None of the fallback platforms ... were found"）。
+  # latest.json 改由下方 updater 作业在全部构建完成后统一生成上传。
   build:
     needs: test
     strategy:
@@ -109,4 +114,23 @@ jobs:
           releaseBody: "变更详情见仓库 CHANGELOG.md；在下方 Assets 选择对应平台安装包下载；已安装用户可在应用内直接检查更新。"
           releaseDraft: false
           prerelease: false
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
+
+  # updater 清单（单一写入者）：所有平台产物就绪后，基于 Release 资产一次性生成
+  # latest.json 并上传，消除矩阵并行写 latest.json 的丢失更新竞态。
+  updater:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate and upload latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/gen-updater-json.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --conf src-tauri/tauri.conf.json \
+            --out latest.json \
+            --upload
