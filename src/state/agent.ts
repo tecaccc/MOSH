@@ -33,6 +33,17 @@ import type {
 } from "../lib/types";
 import { useAppStore } from "./store";
 
+/** 会改动本地 todo/event 数据的工具：执行后需刷新前端各视图。 */
+const MUTATING_TOOLS = new Set([
+  "create_todo",
+  "create_event",
+  "update_event",
+  "delete_event",
+  "delete_events",
+  "set_todo_status",
+  "add_subtask",
+]);
+
 /** UI 消息（持久化行的超集：流式气泡/撤销标记仅存内存）。 */
 export interface UiMessage {
   key: string;
@@ -231,6 +242,10 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       await listen<AgentEventPayload>("agent://tool", (e) => {
         const p = e.payload;
         if (p.type !== "tool") return;
+        // 变更类工具已落库：立即刷新 todos 与各视图的事件窗口（无论当前展示哪个会话）。
+        if (MUTATING_TOOLS.has(p.tool) && p.ok) {
+          void useAppStore.getState().refreshData();
+        }
         if (activeTurnSession !== get().currentSession) return;
         // 工具卡片出现在（流式）文本之后：结算当前气泡，卡片随后。
         settleStreaming(set);
@@ -424,7 +439,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       set((s) => ({
         messages: s.messages.map((x) => (x.key === m.key ? { ...x, undone: true } : x)),
       }));
-      await useAppStore.getState().loadTodos();
+      await useAppStore.getState().refreshData();
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

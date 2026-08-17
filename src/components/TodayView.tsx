@@ -145,12 +145,14 @@ export default function TodayView() {
   const calEvents = useCalendarStore((s) => s.events);
   const startCreateEvent = useCalendarStore((s) => s.startCreateEvent);
   const startEditEvent = useCalendarStore((s) => s.startEditEvent);
+  // AI 工具等外部变更后自增，触发本视图重载今日事件。
+  const dataVersion = useAppStore((s) => s.dataVersion);
 
   useEffect(() => {
     void loadEvents(today, addDays(today, 1)).catch(() => {
       /* 非 Tauri 环境忽略；根页有统一错误提示 */
     });
-  }, [loadEvents]);
+  }, [loadEvents, dataVersion]);
 
   // 编辑器关闭后重取今日事件（与 Svelte $effect 等价）。
   const editing = editingEventOf(calEvents, editingId) !== undefined;

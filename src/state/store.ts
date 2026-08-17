@@ -40,6 +40,8 @@ export interface SettingsTarget {
 interface AppState {
   /** 当前加载到内存的全部（未软删）todo。 */
   records: RecordT[];
+  /** 数据代次：AI 工具等外部变更后自增，视图靠它重载自己的事件窗口。 */
+  dataVersion: number;
   currentView: View;
   /** 当前编辑的 todo id；null=新建模式；undefined=编辑器关闭。 */
   selectedId: string | null | undefined;
@@ -55,6 +57,8 @@ interface AppState {
   consumeSettingsTarget(): void;
   toggleChatSide(): void;
   loadTodos(): Promise<void>;
+  /** 外部变更（AI 工具/撤销等）后统一刷新：重载 todos + 自增 dataVersion。 */
+  refreshData(): Promise<void>;
   startCreate(): void;
   startEdit(id: string): void;
   closeEditor(): void;
@@ -67,6 +71,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>()((set) => ({
   records: [],
+  dataVersion: 0,
   currentView: "home",
   selectedId: undefined,
   chatSideVisible: true,
@@ -84,6 +89,13 @@ export const useAppStore = create<AppState>()((set) => ({
   loadTodos: async () => {
     const list = await listRecords({ kind: "todo" });
     set({ records: list });
+  },
+
+  /** 外部变更后统一刷新：todos 重载（records 响应式）+ dataVersion 自增
+   * （挂载中的视图重载自己的事件窗口；未挂载视图靠挂载时加载）。 */
+  refreshData: async () => {
+    await useAppStore.getState().loadTodos();
+    set((s) => ({ dataVersion: s.dataVersion + 1 }));
   },
 
   startCreate: () => set({ selectedId: null }),

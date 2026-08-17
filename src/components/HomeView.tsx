@@ -100,6 +100,8 @@ export default function HomeView() {
   const startEditEvent = useCalendarStore((s) => s.startEditEvent);
   const setCursor = useCalendarStore((s) => s.setCursor);
   const setMode = useCalendarStore((s) => s.setMode);
+  // AI 工具等外部变更后自增，触发本视图重载事件窗口。
+  const dataVersion = useAppStore((s) => s.dataVersion);
 
   const wStatus = useWeatherStore((s) => s.status);
   const weather = useWeatherStore((s) => s.weather);
@@ -141,8 +143,12 @@ export default function HomeView() {
 
   useEffect(() => {
     void loadWeather();
+  }, [loadWeather]);
+
+  // 事件窗口：挂载 + 外部数据变更（AI 工具等，dataVersion）时重载。
+  useEffect(() => {
     void loadEvents(today, addDays(today, SCHEDULE_DAYS)).catch(() => {});
-  }, [loadWeather, loadEvents]);
+  }, [loadEvents, dataVersion]);
 
   // 事件编辑器关闭后刷新日程窗口（编辑可能换走了 mode/cursor 窗口）。
   const editing = editingEventOf(renderEvents, editingId) !== undefined;

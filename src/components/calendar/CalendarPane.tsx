@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useCalendarStore, type CalMode } from "../../state/calendar";
+import { useAppStore } from "../../state/store";
 import { addDays, mondayOfWeek, monthLabel } from "../../lib/calendar-grid";
 import { formatDate } from "../../lib/datetime";
 import AgendaView from "./AgendaView";
@@ -25,11 +26,13 @@ export default function CalendarPane() {
   const setMode = useCalendarStore((s) => s.setMode);
   const startCreateEvent = useCalendarStore((s) => s.startCreateEvent);
   const loadRange = useCalendarStore((s) => s.loadRange);
+  // AI 工具等外部变更后自增，触发重载当前区间。
+  const dataVersion = useAppStore((s) => s.dataVersion);
 
-  // 首挂载 + mode/cursor 变化时刷新区间。
+  // 首挂载 + mode/cursor 变化 + 外部数据变更时刷新区间。
   useEffect(() => {
     void loadRange();
-  }, [mode, cursor, loadRange]);
+  }, [mode, cursor, loadRange, dataVersion]);
 
   const title = (() => {
     switch (mode) {
