@@ -861,6 +861,8 @@ pub fn run() {
         // process 插件供前端 relaunch（安装完成后重启进入新版本）。
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // 系统通知：日程提醒/待办到期时经 OS 通知中心告知。
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 解析 app_data_dir，创建目录，打开（或新建）数据库并跑迁移。
             // 启动期失败直接 panic 带清晰信息（v1 可接受）。

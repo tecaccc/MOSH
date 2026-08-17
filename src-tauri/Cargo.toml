@@ -28,3 +28,5 @@ tokio = { version = "1", features = ["sync", "time", "macros"] }
 # 自动更新：检测 GitHub Release 新版本并下载安装（process 提供 relaunch 重启）。
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# 系统通知：日程提醒/待办到期时经 OS 通知中心告知（应用内 Toast 之外的补充）。
+tauri-plugin-notification = "2"
