@@ -29,3 +29,8 @@ target
 /cherry-studio/
 /lobehub/
 /cherry-studio/
+
+# 本地开发工具配置（AI 助手/编辑器个人配置，不入库）
+/.vscode/
+/.agents/
+/.claude/
