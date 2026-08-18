@@ -16,6 +16,14 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
+# —— 同步模块（docs/sync-design.md）——
+# 全纯 Rust 实现，规避 windows-gnu 交叉编译的 OpenSSL/C 依赖。
+aes-gcm = "0.10"          # AES-256-GCM 端到端加密
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] } # gzip（先压后密）
+base64 = "0.22"            # 密钥导出串
+getrandom = "0.3"          # 密钥随机源
+sha2 = "0.10"              # S3 SigV4 签名
+hmac = "0.12"              # S3 SigV4 签名
 rusqlite_migration = "1"
 # HTTP 客户端：rustls-tls（纯 Rust TLS）规避 windows-gnu 交叉编译的 OpenSSL 依赖。
 # stream：agent 模块的 SSE 流式解析需要 bytes_stream。

@@ -1,0 +1,32 @@
+{
+  "id": "sync-v1",
+  "name": "sync-v1",
+  "title": "多设备同步 v1：COS + E2E 加密 + 全量 dump LWW 合并",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "connor",
+  "assignee": "connor",
+  "createdAt": "2026-08-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "docs/sync-design.md",
+    "crates/mosh-core/src/storage.rs",
+    "crates/mosh-core/src/model.rs",
+    "src-tauri/src/lib.rs",
+    "src/state/"
+  ],
+  "notes": "v1 代码已实现（2026-08-18）：迁移 v4/v5（agent_messages UUID id + settings.updated_at）、sync 模块（crypto/dump/merge/remote/engine）、tauri 命令面 + 生命周期（启动拉/防抖推/退出兑底）、前端同步分区 + 标题栏状态点。mosh-core 108 测试全绿；windows-gnu check/tsc/vite build 通过。待办：真机 COS 验收（需用户凭证）。",
+  "meta": {}
+}

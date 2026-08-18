@@ -24,6 +24,10 @@ import type {
   SkillDef,
   SkillInfo,
   Status,
+  SyncConfigInfo,
+  SyncConfigInput,
+  SyncOutcome,
+  SyncUi,
   TodoInput,
   UserProfile,
   StorageInfo,
@@ -274,4 +278,46 @@ export async function setMcpEnabled(id: string, enabled: boolean): Promise<void>
 /** 探测端点：连接并返回工具名列表（设置页“测试连接”）。 */
 export async function mcpListTools(baseUrl: string, token?: string | null): Promise<string[]> {
   return invoke<string[]>("mcp_list_tools", { baseUrl, token: token ?? null });
+}
+
+// —— 多设备同步（docs/sync-design.md）——
+
+/** 读同步配置回显（不含 secret）。 */
+export async function syncGetConfig(): Promise<SyncConfigInfo> {
+  return invoke<SyncConfigInfo>("sync_get_config");
+}
+
+/** 保存远端配置；首次生成密钥时返回 `generated_key`（仅此一次）。 */
+export async function syncConfigure(input: SyncConfigInput): Promise<SyncConfigInfo> {
+  return invoke<SyncConfigInfo>("sync_configure", { input });
+}
+
+/** 测试连接（用表单当前值 LIST 前缀；返回前缀下对象数）。 */
+export async function syncTestConnection(input: SyncConfigInput): Promise<number> {
+  return invoke<number>("sync_test_connection", { input });
+}
+
+/** 导出加密密钥（base64 串，粘贴到新设备）。 */
+export async function syncExportKey(): Promise<string> {
+  return invoke<string>("sync_export_key");
+}
+
+/** 导入加密密钥（新设备粘贴）。 */
+export async function syncImportKey(key: string): Promise<void> {
+  await invoke<void>("sync_import_key", { key });
+}
+
+/** 启用/停用同步。 */
+export async function syncSetEnabled(enabled: boolean): Promise<void> {
+  await invoke<void>("sync_set_enabled", { enabled });
+}
+
+/** 手动立即同步。 */
+export async function syncNow(): Promise<SyncOutcome> {
+  return invoke<SyncOutcome>("sync_now");
+}
+
+/** 读同步 UI 状态（事件丢失时的克底）。 */
+export async function syncGetStatus(): Promise<SyncUi> {
+  return invoke<SyncUi>("sync_get_status");
 }

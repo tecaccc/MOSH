@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../state/store";
+import { useSyncStore } from "../state/sync";
 import styles from "./TitleBar.module.css";
 
 /**
@@ -17,6 +18,10 @@ export default function TitleBar() {
   const currentView = useAppStore((s) => s.currentView);
   const chatSideVisible = useAppStore((s) => s.chatSideVisible);
   const toggleChatSide = useAppStore((s) => s.toggleChatSide);
+  // 同步状态点（仅启用时展示；syncing=旋转、idle=绿、error=红，title 提示详情）。
+  const syncEnabled = useSyncStore((s) => s.config?.enabled === true);
+  const syncPhase = useSyncStore((s) => s.ui.phase);
+  const syncError = useSyncStore((s) => s.ui.error);
 
   useEffect(() => {
     if (!inTauri) return;
@@ -48,6 +53,20 @@ export default function TitleBar() {
       <div className={styles["tb-left"]} data-tauri-drag-region />
       <div className={styles["tb-main"]} data-tauri-drag-region />
       <div className={styles.tbActions}>
+        {syncEnabled ? (
+          <span
+            className={styles["tb-sync"]}
+            data-phase={syncPhase}
+            title={
+              syncPhase === "syncing"
+                ? "同步中…"
+                : syncPhase === "error"
+                  ? `同步失败：${syncError ?? "未知错误"}`
+                  : "多设备同步已启用"
+            }
+            aria-label="同步状态"
+          />
+        ) : null}
         {currentView === "agent" ? (
           <button
             type="button"

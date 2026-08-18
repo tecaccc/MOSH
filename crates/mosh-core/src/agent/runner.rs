@@ -137,7 +137,7 @@ pub async fn run_turn_with<C: LlmClient>(
 
     // 1) user 消息落库并进入上下文。
     db.append_agent_message(&AgentMessage {
-        id: 0,
+        id: String::new(),
         session_id: session_id.to_string(),
         role: "user".into(),
         content: user_text.to_string(),
@@ -268,7 +268,7 @@ async fn exec_tool(
         result: result.clone(),
     };
     let row = AgentMessage {
-        id: 0,
+        id: String::new(),
         session_id: session_id.to_string(),
         role: "tool".into(),
         content: String::new(),
@@ -296,7 +296,7 @@ fn rejected_tool(
         result: result.clone(),
     };
     let row = AgentMessage {
-        id: 0,
+        id: String::new(),
         session_id: session_id.to_string(),
         role: "tool".into(),
         content: String::new(),
@@ -357,7 +357,7 @@ fn system_prompt(skills: Option<&str>) -> String {
 
 fn persist_text(db: &SqliteStorage, session_id: &str, content: &str) -> Result<(), CoreError> {
     db.append_agent_message(&AgentMessage {
-        id: 0,
+        id: String::new(),
         session_id: session_id.to_string(),
         role: "assistant".into(),
         content: content.to_string(),
@@ -615,7 +615,7 @@ mod tests {
         let db = SqliteStorage::open_in_memory().unwrap();
         for (role, content) in [("user", "q1"), ("tool", "{}"), ("assistant", "a1")] {
             db.append_agent_message(&AgentMessage {
-                id: 0,
+                id: String::new(),
                 session_id: "s".into(),
                 role: role.into(),
                 content: content.into(),

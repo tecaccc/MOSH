@@ -947,3 +947,175 @@
       display: none;
     }
   }
+
+/* ====== 同步分区（SyncSettings）====== */
+.sync-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+.sync-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
+
+.sync-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sync-field-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sync-field-hint {
+  font-size: 12px;
+  font-weight: 400;
+  font-style: normal;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sync-field-input {
+  height: 34px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color 0.15s;
+}
+
+.sync-field-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.sync-form-actions,
+.sync-key-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.sync-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, opacity 0.15s;
+}
+
+.sync-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.sync-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sync-keybox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.sync-key {
+  font-family: var(--mono, monospace);
+  font-size: 13px;
+  word-break: break-all;
+  color: var(--accent);
+}
+
+.sync-keynote {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 8px;
+}
+
+.sync-toggle {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.sync-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.sync-toggle.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.sync-toggle.on .sync-toggle-knob {
+  transform: translateX(18px);
+  background: #fff;
+}
+
+.sync-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sync-grid3 {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 0.8fr;
+  gap: 0 12px;
+  align-items: start;
+}
+
+.sync-grid3 .sync-field-input {
+  height: 34px;
+}
+
+.sync-check {
+  display: flex;
+  align-items: center;
+  height: 34px;
+}
+
+.sync-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}

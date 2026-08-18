@@ -8,11 +8,17 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+/// storage 写操作后置脏标记（同步防抖推的触发源，见 sync::engine）。
+fn mark_dirty() {
+    crate::sync::engine::mark_dirty();
+}
+
 /// Agent 会话消息行（对齐 `agent_messages` 表）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// id 为 UUIDv7（跨设备不撞号、按时间字典序可排序）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentMessage {
     #[serde(default)]
-    pub id: i64,
+    pub id: String,
     pub session_id: String,
     /// `user` | `assistant` | `tool`。
     pub role: String,
@@ -33,6 +39,15 @@ pub struct AgentSessionSummary {
     pub session_id: String,
     pub title: String,
     pub message_count: i64,
+}
+
+/// settings 全量行（同步 dump / 合并用）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingRow {
+    pub key: String,
+    pub value: String,
+    /// LWW 时间戳（ISO8601）；v4 之前的旧行为空串，视为最早。
+    pub updated_at: String,
 }
 
 /// 初始迁移：统一 `records` 表（见 design §3）。
@@ -80,6 +95,31 @@ fn migrations() -> Migrations<'static> {
         CREATE INDEX idx_agent_messages_session ON agent_messages(session_id);
         "#,
         ),
+        // v4：settings 加 updated_at——多设备同步按 key LWW 的时间戳依据（docs/sync-design.md §3.3）。
+        M::up(r#"ALTER TABLE settings ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';"#),
+        // v5：agent_messages.id 改 TEXT UUID——自增整数在两台设备各自从 1 起，跨设备
+        // 并集合并会撞号串消息（sync design §2）。旧行加 `legacy-` 前缀；
+        // 排序语义改按 created_at（id 不再保证插入顺序）。
+        M::up(
+            r#"
+        CREATE TABLE agent_messages_v5 (
+          id          TEXT PRIMARY KEY,
+          session_id  TEXT NOT NULL,
+          role        TEXT NOT NULL,
+          content     TEXT NOT NULL DEFAULT '',
+          tool_name   TEXT,
+          tool_args   TEXT,
+          tool_result TEXT,
+          created_at  TEXT NOT NULL
+        );
+        INSERT INTO agent_messages_v5
+          SELECT 'legacy-' || id, session_id, role, content, tool_name, tool_args, tool_result, created_at
+          FROM agent_messages;
+        DROP TABLE agent_messages;
+        ALTER TABLE agent_messages_v5 RENAME TO agent_messages;
+        CREATE INDEX idx_agent_messages_session ON agent_messages(session_id);
+        "#,
+        ),
     ])
 }
 
@@ -121,6 +161,7 @@ impl SqliteStorage {
 
     /// 插入完整记录（调用方负责构造所有字段）。
     pub fn insert(&self, record: &Record) -> Result<(), CoreError> {
+        mark_dirty();
         let conn = self.lock()?;
         let kind = kind_to_str(record.kind);
         let status = status_to_str(record.status);
@@ -165,6 +206,7 @@ impl SqliteStorage {
 
     /// 整行覆盖更新（按 id）。调用方须已设置 `updated_at` / `revision`；不存在返回 `NotFound`。
     pub fn update(&self, record: &Record) -> Result<(), CoreError> {
+        mark_dirty();
         let conn = self.lock()?;
         let kind = kind_to_str(record.kind);
         let status = status_to_str(record.status);
@@ -197,6 +239,41 @@ impl SqliteStorage {
         if n == 0 {
             return Err(CoreError::NotFound(record.id.clone()));
         }
+        Ok(())
+    }
+
+    /// 同步合并回放：按 id 整行覆盖写入（INSERT OR REPLACE）。
+    /// LWW 裁决由调用方（sync::merge）完成，这里只负责落盘。
+    pub fn upsert_record(&self, record: &Record) -> Result<(), CoreError> {
+        mark_dirty();
+        let conn = self.lock()?;
+        let kind = kind_to_str(record.kind);
+        let status = status_to_str(record.status);
+        let tags = serde_json::to_string(&record.tags)?;
+        let data = serde_json::to_string(&record.data)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO records
+               (id, kind, title, description, status, start_at, end_at,
+                parent_id, source, tags, data, created_at, updated_at, deleted_at, revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                record.id,
+                kind,
+                record.title,
+                record.description,
+                status,
+                record.start_at,
+                record.end_at,
+                record.parent_id,
+                record.source,
+                tags,
+                data,
+                record.created_at,
+                record.updated_at,
+                record.deleted_at,
+                record.revision,
+            ],
+        )?;
         Ok(())
     }
 
@@ -236,6 +313,7 @@ impl SqliteStorage {
 
     /// 软删：置 `deleted_at` + 递增 `revision`。不存在或已删时返回 `NotFound`。
     pub fn soft_delete(&self, id: &str) -> Result<(), CoreError> {
+        mark_dirty();
         let conn = self.lock()?;
         let now = crate::model::now_iso();
         let n = conn.execute(
@@ -260,27 +338,64 @@ impl SqliteStorage {
         }
     }
 
-    /// 写入 kv 配置项（UPSERT：存在则覆盖）。
+    /// 写入 kv 配置项（UPSERT：存在则覆盖），`updated_at` 自动置为当前时间
+    /// （同步 LWW 依据，见 docs/sync-design.md §3.3）。
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), CoreError> {
+        self.set_setting_with_time(key, value, &crate::model::now_iso())
+    }
+
+    /// 写入 kv 配置项并显式指定 `updated_at`（同步合并恢复远端值时用；
+    /// 本地常规写入走 [`Self::set_setting`]）。
+    pub fn set_setting_with_time(
+        &self,
+        key: &str,
+        value: &str,
+        updated_at: &str,
+    ) -> Result<(), CoreError> {
+        mark_dirty();
         let conn = self.lock()?;
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
+            "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![key, value, updated_at],
         )?;
         Ok(())
     }
 
+    /// 全量 settings（含 updated_at）。同步 dump / 合并用。
+    pub fn list_settings(&self) -> Result<Vec<SettingRow>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare("SELECT key, value, updated_at FROM settings ORDER BY key ASC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SettingRow {
+                key: row.get(0)?,
+                value: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
     // —— Agent 会话消息（见 agent 模块 design §3）——
 
-    /// 追加一条会话消息（user/assistant/tool）。
+    /// 追加一条会话消息（user/assistant/tool）。`id` 为空时自动生成 UUIDv7；
+    /// 显式 id 用于同步合并回放。
     pub fn append_agent_message(&self, msg: &AgentMessage) -> Result<(), CoreError> {
+        mark_dirty();
         let conn = self.lock()?;
+        let id = if msg.id.is_empty() {
+            crate::model::new_id()
+        } else {
+            msg.id.clone()
+        };
         conn.execute(
             "INSERT INTO agent_messages
-             (session_id, role, content, tool_name, tool_args, tool_result, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (id, session_id, role, content, tool_name, tool_args, tool_result, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO NOTHING",
             params![
+                id,
                 msg.session_id,
                 msg.role,
                 msg.content,
@@ -293,25 +408,25 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// 按会话取全部消息（id 升序）。
+    /// 全部会话消息（跨会话，同步 dump 用），按 created_at 升序。
+    pub fn list_all_agent_messages(&self) -> Result<Vec<AgentMessage>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, created_at
+             FROM agent_messages ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_agent_message)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
+    /// 按会话取全部消息（按创建时间升序；同秒内按 id，UUIDv7 保字典序近似时序）。
     pub fn list_agent_messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, CoreError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, created_at
-             FROM agent_messages WHERE session_id = ?1 ORDER BY id ASC",
+             FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC, id ASC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| {
-            Ok(AgentMessage {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                tool_name: row.get(4)?,
-                tool_args: row.get(5)?,
-                tool_result: row.get(6)?,
-                created_at: row.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![session_id], row_to_agent_message)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
@@ -326,16 +441,17 @@ impl SqliteStorage {
     }
 
     /// 会话摘要（最近活跃在前）。标题取首条 user 消息截断。
+    /// 活跃度按 created_at（id 已非自增整数，`legacy-` 前缀破坏字典序）。
     pub fn list_agent_sessions(&self) -> Result<Vec<AgentSessionSummary>, CoreError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT session_id,
                     (SELECT content FROM agent_messages m2
                       WHERE m2.session_id = m.session_id AND m2.role = 'user'
-                      ORDER BY m2.id ASC LIMIT 1) AS first_user,
+                      ORDER BY m2.created_at ASC, m2.id ASC LIMIT 1) AS first_user,
                     COUNT(*) AS n,
-                    MAX(id) AS last_id
-             FROM agent_messages m GROUP BY session_id ORDER BY last_id DESC",
+                    MAX(created_at) AS last_at
+             FROM agent_messages m GROUP BY session_id ORDER BY last_at DESC, session_id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             let first: Option<String> = row.get(1)?;
@@ -390,6 +506,20 @@ fn str_to_status(s: &str) -> Result<Status, CoreError> {
         "cancelled" => Ok(Status::Cancelled),
         other => Err(CoreError::Db(format!("unknown status: {other}"))),
     }
+}
+
+/// 从行映射为 `AgentMessage`（列序与查询保持一致）。
+fn row_to_agent_message(row: &rusqlite::Row<'_>) -> Result<AgentMessage, rusqlite::Error> {
+    Ok(AgentMessage {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        role: row.get(2)?,
+        content: row.get(3)?,
+        tool_name: row.get(4)?,
+        tool_args: row.get(5)?,
+        tool_result: row.get(6)?,
+        created_at: row.get(7)?,
+    })
 }
 
 /// 从行映射为 `Record`。`tags`/`data` 以 JSON 文本存储，读时反序列化。
@@ -700,7 +830,7 @@ mod tests {
 
     fn agent_msg(session: &str, role: &str, content: &str) -> AgentMessage {
         AgentMessage {
-            id: 0,
+            id: String::new(),
             session_id: session.to_string(),
             role: role.to_string(),
             content: content.to_string(),
@@ -803,5 +933,62 @@ mod tests {
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    /// 旧 schema（v3：自增 id 的 agent_messages、无 updated_at 的 settings）升级到当前版本：
+    /// 旧消息保留且加 legacy- 前缀；settings 数据保留，updated_at 视为最早。
+    #[test]
+    fn upgrades_v3_database_in_place() {
+        let dir = tempfile_dir();
+        let path = dir.join("v3_upgrade.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+            CREATE TABLE records (
+              id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT,
+              status TEXT NOT NULL DEFAULT 'active', start_at TEXT, end_at TEXT,
+              parent_id TEXT REFERENCES records(id), source TEXT NOT NULL DEFAULT 'local',
+              tags TEXT NOT NULL DEFAULT '[]', data TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
+              revision INTEGER NOT NULL DEFAULT 1, CHECK (kind IN ('todo','event'))
+            );
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE agent_messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL,
+              content TEXT NOT NULL DEFAULT '', tool_name TEXT, tool_args TEXT, tool_result TEXT,
+              created_at TEXT NOT NULL
+            );
+            INSERT INTO agent_messages (session_id, role, content, created_at)
+              VALUES ('s1', 'user', '旧消息', '2026-08-01T10:00:00+00:00');
+            INSERT INTO settings (key, value) VALUES ('weather', '"Hangzhou"');
+            PRAGMA user_version = 3;
+            "#,
+            )
+            .unwrap();
+        }
+        // 重新打开：自动跑到最新迁移。
+        let db = SqliteStorage::open(&path).unwrap();
+        let msgs = db.list_agent_messages("s1").unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].id.starts_with("legacy-"));
+        assert_eq!(msgs[0].content, "旧消息");
+        let rows = db.list_settings().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "weather");
+        assert_eq!(rows[0].updated_at, "");
+        // 新写入走新机制：UUID id + updated_at。
+        db.set_setting("k", "v").unwrap();
+        let row = db
+            .list_settings()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.key == "k")
+            .unwrap();
+        assert!(!row.updated_at.is_empty());
+        // 旧 id 与新 UUID 不撞：再追加一条，两条共存。
+        db.append_agent_message(&agent_msg("s1", "user", "新消息"))
+            .unwrap();
+        assert_eq!(db.list_agent_messages("s1").unwrap().len(), 2);
     }
 }

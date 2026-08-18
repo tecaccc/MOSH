@@ -15,6 +15,7 @@ import { editingEventOf, useCalendarStore } from "./state/calendar";
 import { useProfileStore } from "./state/profile";
 import { startReminders } from "./state/reminder";
 import { selectedRecordOf, useAppStore } from "./state/store";
+import { useSyncStore } from "./state/sync";
 import { useUpdaterStore } from "./state/updater";
 import styles from "./App.module.css";
 
@@ -73,6 +74,11 @@ export default function App() {
       void useUpdaterStore.getState().check({ silent: true });
     }, 8000);
     return () => clearTimeout(timer);
+  }, []);
+
+  // 多设备同步：加载配置 + 订阅状态事件（未启用时后端静默跳过同步）。
+  useEffect(() => {
+    void useSyncStore.getState().init();
   }, []);
 
   const calEditing = editingEventOf(calEvents, editingId) !== undefined;

@@ -17,6 +17,7 @@ import Zhipu from "@lobehub/icons/es/Zhipu";
 import { CITIES } from "../lib/cities";
 import { McpPane, SkillsPane } from "./AgentToolsSettings";
 import Avatar from "./Avatar";
+import SyncSettings from "./SyncSettings";
 import {
   deleteAiProvider,
   getCloseBehavior,
@@ -522,6 +523,22 @@ export default function SettingsView() {
 
           <button
             type="button"
+            className={`${styles["nav-item"]}${activeSection === "sync" ? ` ${styles.active}` : ""}`}
+            onClick={() => setActiveSection("sync")}
+          >
+            <span className={styles["nav-ico"]}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+                <path d="M20 11.5A8 8 0 0 0 6.3 6.3L4 8.5" />
+                <path d="M4 4v4.5H8.5" />
+                <path d="M4 12.5A8 8 0 0 0 17.7 17.7L20 15.5" />
+                <path d="M20 20v-4.5H15.5" />
+              </svg>
+            </span>
+            <span className={styles["nav-label"]}>同步</span>
+          </button>
+
+          <button
+            type="button"
             className={`${styles["nav-item"]}${activeSection === "weather" ? ` ${styles.active}` : ""}`}
             onClick={() => setActiveSection("weather")}
           >
@@ -821,6 +838,8 @@ export default function SettingsView() {
             </div>
           </div>
         ) : null}
+
+        {activeSection === "sync" ? <SyncSettings /> : null}
 
         {activeSection === "weather" ? (
           <div className={styles["content-scroll"]}>

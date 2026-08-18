@@ -169,6 +169,55 @@ export interface StorageInfo {
   customized: boolean;
 }
 
+// —— 多设备同步（docs/sync-design.md）——
+
+/** 同步远端配置回显（不含 secret；`generated_key` 仅首次生成时返回一次）。 */
+export interface SyncConfigInfo {
+  enabled: boolean;
+  endpoint: string;
+  region: string;
+  bucket: string;
+  access_key: string;
+  has_secret: boolean;
+  has_key: boolean;
+  device_id: string | null;
+  last_sync_at: string | null;
+  /** virtual（桶名进域名）| path（桶名进路径，MinIO 等自建网关）。 */
+  addressing: string;
+  /** 单请求超时（秒）。 */
+  timeout_secs: number;
+  /** 是否校验 TLS 证书。 */
+  tls_verify: boolean;
+  generated_key?: string;
+}
+
+/** 同步配置保存输入（secret_key 留空 = 保留原值；高级项缺省 = 默认值）。 */
+export interface SyncConfigInput {
+  endpoint: string;
+  region: string;
+  bucket: string;
+  access_key: string;
+  secret_key?: string | null;
+  addressing?: string | null;
+  timeout_secs?: number | null;
+  tls_verify?: boolean | null;
+}
+
+/** 同步运行状态（事件 `sync://status` 同构；标题栏状态点消费）。 */
+export interface SyncUi {
+  /** idle | syncing | error */
+  phase: string;
+  last_success_at: string | null;
+  error: string | null;
+}
+
+/** 一次同步的结果统计。 */
+export interface SyncOutcome {
+  remote_dumps: number;
+  stats: { records_applied: number; settings_applied: number; messages_applied: number };
+  pushed: boolean;
+}
+
 /** 窗口关闭按钮行为：exit=直接退出；background=隐藏窗口后台驻留（需托盘）。 */
 export type CloseBehavior = "exit" | "background";
 
@@ -201,9 +250,9 @@ export interface AiConfig {
   model: string;
 }
 
-/** 会话消息行（对齐 `agent_messages` 表）。 */
+/** 会话消息行（对齐 `agent_messages` 表；id 为 UUIDv7 字符串）。 */
 export interface AgentMessage {
-  id: number;
+  id: string;
   session_id: string;
   /** user | assistant | tool */
   role: string;
