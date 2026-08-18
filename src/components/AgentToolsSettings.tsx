@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useAgentStore } from "../state/agent";
 import { useDialogStore } from "../state/dialog";
+import { toast } from "../state/toast";
+import SecretInput from "./SecretInput";
 import {
   deleteSkill as ipcDeleteSkill,
   deleteMcpServer as ipcDeleteMcp,
@@ -11,7 +13,7 @@ import {
   setMcpEnabled,
   setSkillActive,
 } from "../lib/ipc";
-import type { McpServerConfig, SkillDef, SkillInfo } from "../lib/types";
+import type { McpServerConfig, McpToolDetail, SkillDef, SkillInfo } from "../lib/types";
 import styles from "./AgentToolsSettings.module.css";
 
 /**
@@ -56,8 +58,6 @@ export function SkillsPane() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [editingSkill, setEditingSkill] = useState<SkillDef | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
-  const [skillMsg, setSkillMsg] = useState<string | null>(null);
-  const [skillErr, setSkillErr] = useState<string | null>(null);
 
   useEffect(() => {
     void reloadSkillsList().then(setSkills);
@@ -69,7 +69,7 @@ export function SkillsPane() {
       setSkills((list) => list.map((x) => (x.id === sk.id ? { ...x, active } : x)));
       await loadChatTools();
     } catch (e) {
-      setSkillErr(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -77,16 +77,14 @@ export function SkillsPane() {
     const s = editingSkill;
     if (!s) return;
     setSkillBusy(true);
-    setSkillErr(null);
-    setSkillMsg(null);
     try {
       await ipcSaveSkill(s);
       setEditingSkill(null);
-      setSkillMsg("技能已保存");
+      toast.success("技能已保存");
       setSkills(await reloadSkillsList());
       await loadChatTools();
     } catch (e) {
-      setSkillErr(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setSkillBusy(false);
     }
@@ -105,7 +103,7 @@ export function SkillsPane() {
       setSkills(await reloadSkillsList());
       await loadChatTools();
     } catch (e) {
-      setSkillErr(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -123,9 +121,6 @@ export function SkillsPane() {
             + 新建技能
           </button>
         </div>
-
-        {skillMsg ? <div className={styles.ok}>{skillMsg}</div> : null}
-        {skillErr ? <div className={styles.err}>{skillErr}</div> : null}
 
         {editingSkill ? (
           <div className={styles.editor}>
@@ -199,7 +194,13 @@ export function SkillsPane() {
                     </button>
                   </>
                 ) : (
-                  <button type="button" className={styles.mini} onClick={() => setSkillMsg(sk.prompt)}>
+                  <button
+                    type="button"
+                    className={styles.mini}
+                    onClick={() =>
+                      toast.info(`「${sk.name}」提示词`, { detail: sk.prompt, ttl: 20_000 })
+                    }
+                  >
                     查看提示词
                   </button>
                 )}
@@ -215,6 +216,20 @@ export function SkillsPane() {
   );
 }
 
+/** 把 JSON Schema properties 展平为「参数名: 类型」概览。 */
+function formatToolParams(schema: Record<string, unknown>): string {
+  const props = (schema?.properties ?? {}) as Record<string, Record<string, unknown>>;
+  const required: string[] = (schema?.required as string[]) ?? [];
+  if (Object.keys(props).length === 0) return "";
+  return Object.entries(props)
+    .map(([name, def]) => {
+    const type = (def.type ?? "any") as string;
+    const req = required.includes(name) ? " *" : "";
+    return `${name}${req}(${type})`;
+  })
+    .join("、");
+}
+
 /** —— MCP 面板 —— */
 export function McpPane() {
   const mcpServers = useAgentStore((s) => s.mcpServers);
@@ -223,10 +238,9 @@ export function McpPane() {
 
   const [editingServer, setEditingServer] = useState<McpServerConfig | null>(null);
   const [serverBusy, setServerBusy] = useState(false);
-  const [serverErr, setServerErr] = useState<string | null>(null);
-  /** 测试连接结果：serverId → { tools?: string[]; error?: string; loading?: boolean }。 */
+  /** 测试连接结果：serverId → { tools?: McpToolDetail[]; loading?: boolean }。 */
   const [probe, setProbe] = useState<
-    Record<string, { tools?: string[]; error?: string; loading?: boolean }>
+    Record<string, { tools?: McpToolDetail[]; loading?: boolean }>
   >({});
 
   async function onToggleServer(srv: McpServerConfig, enabled: boolean) {
@@ -234,7 +248,7 @@ export function McpPane() {
       await setMcpEnabled(srv.id, enabled);
       await loadChatTools();
     } catch (e) {
-      setServerErr(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -242,13 +256,13 @@ export function McpPane() {
     const srv = editingServer;
     if (!srv) return;
     setServerBusy(true);
-    setServerErr(null);
     try {
       await ipcSaveMcp(srv);
       setEditingServer(null);
+      toast.success("MCP 服务器已保存");
       await loadChatTools();
     } catch (e) {
-      setServerErr(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setServerBusy(false);
     }
@@ -266,7 +280,7 @@ export function McpPane() {
       await ipcDeleteMcp(srv.id);
       await loadChatTools();
     } catch (e) {
-      setServerErr(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -275,11 +289,19 @@ export function McpPane() {
     try {
       const tools = await mcpListTools(srv.url, srv.token);
       setProbe((p) => ({ ...p, [srv.id]: { tools } }));
+      toast.success(
+        tools.length > 0
+          ? `「${srv.name}」连接成功——识别到 ${tools.length} 个工具。`
+          : `「${srv.name}」连接成功，但未识别到任何工具。`,
+      );
     } catch (e) {
-      setProbe((p) => ({
-        ...p,
-        [srv.id]: { error: e instanceof Error ? e.message : String(e) },
-      }));
+      setProbe((p) => {
+        const { [srv.id]: _drop, ...rest } = p;
+        return rest;
+      });
+      toast.error(
+        `「${srv.name}」连接失败：${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 
@@ -298,8 +320,6 @@ export function McpPane() {
             + 添加服务器
           </button>
         </div>
-
-        {serverErr ? <div className={styles.err}>{serverErr}</div> : null}
 
         {editingServer ? (
           <div className={styles.editor}>
@@ -327,9 +347,8 @@ export function McpPane() {
             )}
             {field(
               "Bearer Token（可选）",
-              <input
-                className={styles.input}
-                type="password"
+              <SecretInput
+                inputClassName={styles.input}
                 value={editingServer.token ?? ""}
                 onChange={(e) =>
                   setEditingServer({
@@ -365,20 +384,26 @@ export function McpPane() {
                 <div className={styles["item-main"]}>
                   <div className={styles["item-name"]}>{srv.name}</div>
                   <div className={styles["item-desc"]}>{srv.url}</div>
-                  {p?.loading ? (
-                    <div className={styles["probe-line"]}>连接中…</div>
-                  ) : p?.tools ? (
-                    <div className={styles["probe-line ok"]}>
-                      连接成功 · {p.tools.length} 个工具：{p.tools.slice(0, 6).join("、")}
-                      {p.tools.length > 6 ? " 等" : ""}
+                  {p?.tools && p.tools.length > 0 ? (
+                    <div className={styles["tool-list"]}>
+                      {p.tools.map((t) => (
+                        <div key={t.name} className={styles["tool-item"]}>
+                          <div className={styles["tool-item-name"]}>{t.name}</div>
+                          <div className={styles["tool-item-desc"]}>{t.description}</div>
+                          {formatToolParams(t.input_schema)}
+                        </div>
+                      ))}
                     </div>
-                  ) : p?.error ? (
-                    <div className={styles["probe-line err"]}>连接失败：{p.error}</div>
                   ) : null}
                 </div>
                 <div className={styles["item-actions"]}>
-                  <button type="button" className={styles.mini} onClick={() => void onProbe(srv)}>
-                    测试连接
+                  <button
+                    type="button"
+                    className={styles.mini}
+                    disabled={p?.loading}
+                    onClick={() => void onProbe(srv)}
+                  >
+                    {p?.loading ? "测试中…" : "测试连接"}
                   </button>
                   <button type="button" className={styles.mini} onClick={() => setEditingServer({ ...srv })}>
                     编辑

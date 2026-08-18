@@ -43,17 +43,20 @@
   font-size: 0.82rem;
 }
 
-/* 顶部提示图层：固定于标题栏下方右侧，卡片纵向堆叠（从上往下弹出）。
+/* 顶部提示图层：固定于标题栏下方居中，卡片纵向堆叠（从上往下弹出）。
+   容器不设 max-width（卡片自带宽度限制），否则 left:0/right:0 + max-width
+   会收缩贴左，导致卡片弹在左上角而非居中。
    pointer-events none 让空白区域不挡点击，卡片自身 auto 恢复交互。 */
 .toast-layer {
   position: fixed;
   top: 48px;
-  right: 16px;
+  left: 0;
+  right: 0;
   z-index: 320;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 8px;
-  max-width: min(360px, calc(100vw - 32px));
   pointer-events: none;
 }
 

@@ -8,7 +8,7 @@ import {
   weekdayLabelsMonFirst,
 } from "../../lib/calendar-grid";
 import { formatDate, formatTime } from "../../lib/datetime";
-import type { Record as RecordT } from "../../lib/types";
+import type { RecordData as RecordT } from "../../lib/types";
 import styles from "./AgendaView.module.css";
 
 /**

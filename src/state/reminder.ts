@@ -18,7 +18,7 @@ import {
 import { addDays, expandRecurring, reminderMinutesOf, todayOnly } from "../lib/calendar-grid";
 import { formatDateTime } from "../lib/datetime";
 import { listEvents, listRecords } from "../lib/ipc";
-import type { Record as RecordT } from "../lib/types";
+import type { RecordData as RecordT } from "../lib/types";
 
 /** 待办到期后仍提醒的窗口（错过不补发）。 */
 const TODO_DUE_WINDOW_MS = 60 * 60_000;

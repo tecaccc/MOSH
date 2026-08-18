@@ -303,7 +303,7 @@ mod tests {
             vec![setting("theme", "light", "2026-08-18T10:00:00+00:00")],
             vec![msg("m1", "s1")],
         );
-        apply(&db, &[remote.clone()]).unwrap();
+        apply(&db, std::slice::from_ref(&remote)).unwrap();
         let once = db.get("t1").unwrap();
         // 第二次：无新增（幂等）。
         let stats = apply(&db, &[remote]).unwrap();

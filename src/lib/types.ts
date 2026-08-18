@@ -34,7 +34,7 @@ export interface RecordData {
 }
 
 /** 统一记录，字段对齐 `records` 表。 */
-export interface Record {
+export interface RecordData {
   id: string;
   kind: Kind;
   title: string;
@@ -326,4 +326,11 @@ export interface McpServerConfig {
   url: string;
   token?: string | null;
   enabled: boolean;
+}
+
+/** MCP 测试连接返回的工具详情。 */
+export interface McpToolDetail {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
 }

@@ -7,7 +7,7 @@ import { editingEventOf, useCalendarStore } from "../state/calendar";
 import { useProfileStore } from "../state/profile";
 import { useWeatherStore } from "../state/weather";
 import { WEATHER_ICONS, weatherInfo, type WeatherIcon } from "../lib/weather-code";
-import type { Priority, Record as RecordT } from "../lib/types";
+import type { Priority, RecordData as RecordT } from "../lib/types";
 import Avatar from "./Avatar";
 import styles from "./HomeView.module.css";
 

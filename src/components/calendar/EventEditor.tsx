@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useCalendarStore } from "../../state/calendar";
 import { fromLocalInput, toDateOnly, toLocalInput } from "../../lib/datetime";
-import type { EventInput, Record as RecordT, Status } from "../../lib/types";
+import type { EventInput, RecordData as RecordT, Status } from "../../lib/types";
 import styles from "./EventEditor.module.css";
 
 /**

@@ -772,54 +772,6 @@
     color: var(--accent);
   }
 
-  /* ====== 顶部 toast 通知（从上往下弹出） ====== */
-  .toast {
-    position: fixed;
-    left: 50%;
-    top: 64px;
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    max-width: 480px;
-    padding: 10px 16px;
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    border: 1px solid var(--border-soft);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
-    font-size: 13px;
-    z-index: 200;
-    animation: toast-in 0.22s ease-out;
-  }
-
-  .toast.ok .toast-ico {
-    color: var(--pri-low);
-  }
-
-  .toast.fail .toast-ico {
-    color: var(--danger);
-  }
-
-  .toast-ico {
-    font-weight: 700;
-    flex-shrink: 0;
-  }
-
-  .toast-text {
-    color: var(--text);
-  }
-
-  @keyframes toast-in {
-    from {
-      opacity: 0;
-      transform: translate(-50%, -10px);
-    }
-    to {
-      opacity: 1;
-      transform: translate(-50%, 0);
-    }
-  }
-
   /* ====== 关于 ====== */
   .about-brand {
     display: flex;
@@ -964,6 +916,18 @@
   gap: 0 12px;
 }
 
+/* 高级偏好行内的窄数字输入（超时秒数）。 */
+.sync-num {
+  width: 92px;
+  flex-shrink: 0;
+}
+
+/* 手动同步行内的失败详情（持久状态展示，非一次性提醒）。 */
+.sync-err-hint {
+  color: var(--danger);
+  word-break: break-all;
+}
+
 .sync-field {
   display: flex;
   flex-direction: column;
@@ -1094,28 +1058,4 @@
 .sync-toggle:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.sync-grid3 {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr 0.8fr;
-  gap: 0 12px;
-  align-items: start;
-}
-
-.sync-grid3 .sync-field-input {
-  height: 34px;
-}
-
-.sync-check {
-  display: flex;
-  align-items: center;
-  height: 34px;
-}
-
-.sync-check input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-  cursor: pointer;
 }

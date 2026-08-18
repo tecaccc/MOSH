@@ -11,7 +11,7 @@ import {
   weekdayLabelsMonFirst,
 } from "../../lib/calendar-grid";
 import { formatTime } from "../../lib/datetime";
-import type { Record as RecordT } from "../../lib/types";
+import type { RecordData as RecordT } from "../../lib/types";
 import styles from "./MonthView.module.css";
 
 /** 月视图：6×7 网格（周一首）。点格空白 → 当日新建；点事件 → 编辑。 */

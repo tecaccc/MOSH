@@ -8,7 +8,7 @@ import {
   weekdayLabelsMonFirst,
 } from "../../lib/calendar-grid";
 import { formatTime } from "../../lib/datetime";
-import type { Record as RecordT } from "../../lib/types";
+import type { RecordData as RecordData } from "../../lib/types";
 import styles from "./TimeGrid.module.css";
 
 /**
@@ -46,7 +46,7 @@ export default function TimeGrid({ days }: { days: string[] }) {
   const gridTemplate = { gridTemplateColumns: `48px repeat(${days.length}, 1fr)` };
   const axisHeight = { height: HOUR_H * 24 };
 
-  const allDayChips = (day: string): RecordT[] =>
+  const allDayChips = (day: string): RecordData[] =>
     renderEvents.filter((e) => e.data.all_day === true && eventOnDay(e, day));
   const timedBlocks = (day: string) => layoutTimedDay(renderEvents, day);
 

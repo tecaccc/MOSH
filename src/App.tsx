@@ -8,6 +8,7 @@ import Modal from "./components/Modal";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
+import ToastHost from "./components/ToastHost";
 import TodoEditor from "./components/TodoEditor";
 import TodayView from "./components/TodayView";
 import UpdaterToast from "./components/UpdaterToast";
@@ -132,9 +133,10 @@ export default function App() {
       {/* 全局对话框（confirm/prompt 的自绘替代，任意视图可调用） */}
       <DialogHost />
 
-      {/* 顶部提示图层：更新等 Toast 从顶部向下弹出堆叠（日程/待办提醒已改为仅系统通知） */}
+      {/* 顶部提示图层：更新/全局 Toast（操作反馈、同步失败等）从顶部向下弹出堆叠 */}
       <div className={styles["toast-layer"]}>
         <UpdaterToast />
+        <ToastHost />
       </div>
     </div>
   );

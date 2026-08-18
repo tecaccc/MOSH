@@ -5,7 +5,7 @@
  * 日期算术一律用**本地** `Date(y, m-1, d)` 构造，避免 UTC date-only 解析的时区漂移。
  */
 
-import type { Record as RecordT } from "./types";
+import type { RecordData as RecordData } from "./types";
 import { toDateOnly } from "./datetime";
 
 /** 周一首的星期标签。 */
@@ -94,7 +94,7 @@ export function dayOfMonth(dateOnly: string): number {
  * 全天事件：[start_at, end_at] 含端点逐日比较；定时事件：取两端本地日期，落在区间即算。
  * 两者统一：用 `toDateOnly` 归一后做闭区间比较（全天 end_at 含当天）。
  */
-export function eventOnDay(event: RecordT, dateOnly: string): boolean {
+export function eventOnDay(event: RecordData, dateOnly: string): boolean {
   if (!event.start_at || !event.end_at) return false;
   const s = toDateOnly(event.start_at);
   const e = toDateOnly(event.end_at);
@@ -104,7 +104,7 @@ export function eventOnDay(event: RecordT, dateOnly: string): boolean {
 /**
  * 某日的事件（全天置顶，再按 start_at 升序）。供月格/议程复用。
  */
-export function orderedForDay(events: RecordT[], dateOnly: string): RecordT[] {
+export function orderedForDay(events: RecordData[], dateOnly: string): RecordData[] {
   return events
     .filter((e) => eventOnDay(e, dateOnly))
     .sort((a, b) => {
@@ -121,7 +121,7 @@ export function orderedForDay(events: RecordT[], dateOnly: string): RecordT[] {
  * 全天事件返回 null（由全天带渲染）。无重叠返回 null。
  */
 export function timedBlockOnDay(
-  event: RecordT,
+  event: RecordData,
   dateOnly: string,
 ): { startMin: number; endMin: number; clipped: boolean } | null {
   if (event.data.all_day === true || !event.start_at || !event.end_at) return null;
@@ -145,7 +145,7 @@ export function timedBlockOnDay(
 
 /** 时间轴上某日的一个定时事件块（含通道布局结果）。 */
 export interface TimedBlock {
-  event: RecordT;
+  event: RecordData;
   startMin: number;
   endMin: number;
   clipped: boolean;
@@ -157,7 +157,7 @@ export interface TimedBlock {
 export type Recurrence = "none" | "daily" | "weekly" | "monthly" | "yearly";
 
 /** 从 record.data 读周期（非法/缺省 → "none"）。 */
-export function recurrenceOf(event: RecordT): Recurrence {
+export function recurrenceOf(event: RecordData): Recurrence {
   const r = event.data.recurrence;
   return r === "daily" || r === "weekly" || r === "monthly" || r === "yearly"
     ? r
@@ -165,7 +165,7 @@ export function recurrenceOf(event: RecordT): Recurrence {
 }
 
 /** 从 record.data 读提前提醒分钟数（缺省 0）。 */
-export function reminderMinutesOf(event: RecordT): number {
+export function reminderMinutesOf(event: RecordData): number {
   return typeof event.data.reminder_minutes === "number" ? event.data.reminder_minutes : 0;
 }
 
@@ -228,8 +228,8 @@ const MAX_OCCURRENCES = 1000;
  * 非周期/无起止的事件原样返回；周期事件每次发生的 `id` 形如 `{原id}::{occurrence_start}`，
  * 供 `startEditEvent` 反解出父事件 id。全天按 date-only 步进，定时按本地时间步进。
  */
-export function expandRecurring(events: RecordT[], from: string, to: string): RecordT[] {
-  const out: RecordT[] = [];
+export function expandRecurring(events: RecordData[], from: string, to: string): RecordData[] {
+  const out: RecordData[] = [];
   for (const ev of events) {
     const rec = recurrenceOf(ev);
     if (rec === "none" || !ev.start_at || !ev.end_at) {
@@ -275,7 +275,7 @@ export function occurrenceParentId(id: string): string {
  * 某日定时事件的通道布局：把相互重叠的事件归为同簇，簇内按贪婪分道，
  * 使重叠事件并排显示（而非互相遮挡）。`lane/laneCount` 供 CSS 算 left/width。
  */
-export function layoutTimedDay(events: RecordT[], dateOnly: string): TimedBlock[] {
+export function layoutTimedDay(events: RecordData[], dateOnly: string): TimedBlock[] {
   const raw = events
     .map((e) => {
       const b = timedBlockOnDay(e, dateOnly);

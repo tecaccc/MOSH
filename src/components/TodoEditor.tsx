@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { formatCompletedAt, formatDateTime, fromLocalInput, toLocalInput } from "../lib/datetime";
 import { subtasksOf, useAppStore } from "../state/store";
 import { useDialogStore } from "../state/dialog";
-import type { Priority, Record as RecordT, Status } from "../lib/types";
+import type { Priority, RecordData as RecordT, Status } from "../lib/types";
 import styles from "./TodoEditor.module.css";
 
 /**

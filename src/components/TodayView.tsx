@@ -4,7 +4,7 @@ import { formatCompletedAt, formatTime } from "../lib/datetime";
 import { useAppStore } from "../state/store";
 import { editingEventOf, useCalendarStore } from "../state/calendar";
 import { useProfileStore } from "../state/profile";
-import type { Priority, Record as RecordT } from "../lib/types";
+import type { Priority, RecordData as RecordT } from "../lib/types";
 import Avatar from "./Avatar";
 import styles from "./TodayView.module.css";
 

@@ -17,8 +17,9 @@ import type {
   CurrentWeather,
   EventInput,
   McpServerConfig,
+  McpToolDetail,
   PermissionMode,
-  Record as RecordT,
+  RecordData as RecordT,
   RecordFilter,
   RecordPatch,
   SkillDef,
@@ -276,8 +277,8 @@ export async function setMcpEnabled(id: string, enabled: boolean): Promise<void>
 }
 
 /** 探测端点：连接并返回工具名列表（设置页“测试连接”）。 */
-export async function mcpListTools(baseUrl: string, token?: string | null): Promise<string[]> {
-  return invoke<string[]>("mcp_list_tools", { baseUrl, token: token ?? null });
+export async function mcpListTools(baseUrl: string, token?: string | null): Promise<McpToolDetail[]> {
+  return invoke<McpToolDetail[]>("mcp_list_tools", { baseUrl, token: token ?? null });
 }
 
 // —— 多设备同步（docs/sync-design.md）——

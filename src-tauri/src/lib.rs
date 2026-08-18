@@ -844,9 +844,20 @@ fn set_mcp_enabled(
     save_setting_value(&state, "ai_mcp_servers", &servers)
 }
 
-/// 探测：连接并列出工具名（设置页“测试连接”用）。
+/// 测试连接展示的工具详情（name / description / 入参 schema）。
+#[derive(serde::Serialize)]
+struct McpToolDetail {
+    name: String,
+    description: String,
+    input_schema: serde_json::Value,
+}
+
+/// 探测：连接并列出工具详情（设置页“测试连接”用）。
 #[tauri::command]
-async fn mcp_list_tools(base_url: String, token: Option<String>) -> Result<Vec<String>, String> {
+async fn mcp_list_tools(
+    base_url: String,
+    token: Option<String>,
+) -> Result<Vec<McpToolDetail>, String> {
     let cfg = McpServerConfig {
         id: "probe".into(),
         name: "probe".into(),
@@ -857,7 +868,25 @@ async fn mcp_list_tools(base_url: String, token: Option<String>) -> Result<Vec<S
     let tools = agent::mcp::list_tools(&cfg).await?;
     Ok(tools
         .iter()
-        .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
+        .filter_map(|t| {
+            let name = t.get("name")?.as_str()?.to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(McpToolDetail {
+                name,
+                description: t
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                input_schema: t
+                    .get("inputSchema")
+                    .cloned()
+                    .filter(|s| s.is_object())
+                    .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
+            })
+        })
         .collect())
 }
 

@@ -80,9 +80,9 @@ pub fn open(sealed: &[u8], key: &[u8; KEY_LEN]) -> Result<Vec<u8>, CoreError> {
         .decrypt(Nonce::from_slice(nonce_bytes), Payload::from(ct))
         .map_err(|_| CoreError::Validation("解密失败：密钥错误或数据损坏".to_string()))?;
     if !pl.starts_with(MAGIC) {
-        return Err(CoreError::Validation(format!(
-            "不支持的同步数据格式（magic 不匹配）"
-        )));
+        return Err(CoreError::Validation(
+            "不支持的同步数据格式（magic 不匹配）".to_string(),
+        ));
     }
     Ok(pl[MAGIC.len()..].to_vec())
 }

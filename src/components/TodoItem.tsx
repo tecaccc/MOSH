@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { formatCompletedAt, formatDayShort, formatTime } from "../lib/datetime";
 import { priorityOf, subtasksOf, useAppStore } from "../state/store";
 import { useDialogStore } from "../state/dialog";
-import type { Record as RecordT, Status } from "../lib/types";
+import type { RecordData as RecordT, Status } from "../lib/types";
 import styles from "./TodoItem.module.css";
 
 /**

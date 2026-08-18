@@ -4,17 +4,17 @@
   flex-direction: column;
   gap: 10px;
   width: 320px;
+  max-width: calc(100vw - 32px);
   padding: 14px 16px;
   background: var(--surface);
   border: 1px solid var(--border-soft);
-  border-left: 3px solid var(--accent);
   border-radius: var(--radius-md);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
   animation: drop-in 0.22s ease-out;
 }
 
-.updater.err {
-  border-left-color: var(--danger);
+.updater.err .title {
+  color: var(--danger);
 }
 
 .head {

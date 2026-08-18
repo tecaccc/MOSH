@@ -80,14 +80,16 @@ impl S3Client {
         })
     }
 
-    /// 归一化 endpoint：去 scheme / 尾斜杠。
-    fn endpoint_host(&self) -> &str {
-        self.config
-            .endpoint
-            .trim()
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .trim_end_matches('/')
+    /// 归一化 endpoint：去 scheme / 尾斜杠；腾讯 COS 裸地域域名补 `cos.` 前缀。
+    fn endpoint_host(&self) -> String {
+        normalize_endpoint(
+            self.config
+                .endpoint
+                .trim()
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .trim_end_matches('/'),
+        )
     }
 
     fn is_path_style(&self) -> bool {
@@ -107,6 +109,21 @@ impl S3Client {
             return format!("https://{endpoint}");
         }
         format!("https://{bucket}.{endpoint}")
+    }
+
+    /// 签名用 region：显式配置优先；留空时从 COS endpoint 提取
+    /// （`cos.<region>.myqcloud.com`），避免空 region 导致 403。
+    fn signing_region(&self) -> String {
+        let configured = self.config.region.trim();
+        if !configured.is_empty() {
+            return configured.to_string();
+        }
+        let host = self.endpoint_host();
+        host.strip_prefix("cos.")
+            .and_then(|rest| rest.strip_suffix(".myqcloud.com"))
+            .filter(|region| !region.is_empty() && !region.contains('.'))
+            .map(str::to_string)
+            .unwrap_or_default()
     }
 
     fn url(&self, key: &str) -> String {
@@ -186,12 +203,13 @@ impl S3Client {
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
         let date = now.format("%Y%m%d").to_string();
         let host = url_host(url)?;
+        let region = self.signing_region();
         let auth = authorization(
             &self.config.secret_key,
             &self.config.access_key,
             &date,
             &amz_date,
-            &self.config.region,
+            &region,
             method,
             url,
             &[("host", host.as_str())],
@@ -215,6 +233,25 @@ impl S3Client {
 }
 
 // —— SigV4 签名（纯函数，快照测试） ——
+
+/// 腾讯 COS endpoint 容错：裸地域域名（如 `ap-shanghai.myqcloud.com`，缺 `cos.`
+/// 服务前缀）不解析、必以 DNS 错误失败——补全为 `cos.<region>.myqcloud.com`。
+/// 仅匹配 `<两字母-地域>.myqcloud.com` 单标签形态；已带 `cos.`、完整桶域名
+/// 或其他厂商域名不受影响。
+pub fn normalize_endpoint(endpoint: &str) -> String {
+    const SUFFIX: &str = ".myqcloud.com";
+    let Some(label) = endpoint.strip_suffix(SUFFIX) else {
+        return endpoint.to_string();
+    };
+    let b = label.as_bytes();
+    let looks_like_region =
+        !label.contains('.') && b.len() >= 3 && b[0].is_ascii_lowercase() && b[1].is_ascii_lowercase() && b[2] == b'-';
+    if looks_like_region {
+        format!("cos.{endpoint}")
+    } else {
+        endpoint.to_string()
+    }
+}
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(key).expect("hmac accepts any key length");
@@ -291,7 +328,6 @@ fn split_url(url: &str) -> (&str, &str) {
             let path_query = &no_scheme[i..];
             path_query
                 .split_once('?')
-                .map(|(p, q)| (p, q))
                 .unwrap_or((path_query, ""))
         }
         None => ("/", ""),
@@ -398,6 +434,17 @@ mod tests {
             c.url("mosh-sync/dev1/dump.bin"),
             "https://mosh-test.cos.ap-guangzhou.myqcloud.com/mosh-sync/dev1/dump.bin"
         );
+        // 裸地域域名（缺 cos. 前缀）：自动补全，否则 DNS 不解析。
+        let mut cfg_bare = config();
+        cfg_bare.endpoint = "ap-shanghai.myqcloud.com".into();
+        cfg_bare.bucket = "mosh-1258463625".into();
+        cfg_bare.region = "".into(); // region 留空 → 从 endpoint 推导
+        let c_bare = S3Client::new(cfg_bare).unwrap();
+        assert_eq!(
+            c_bare.url("k"),
+            "https://mosh-1258463625.cos.ap-shanghai.myqcloud.com/k"
+        );
+        assert_eq!(c_bare.signing_region(), "ap-shanghai");
         // 带 scheme 与尾斜杠的 endpoint 也归一。
         let mut cfg2 = config();
         cfg2.endpoint = "https://cos.ap-shanghai.myqcloud.com/".into();
@@ -512,5 +559,33 @@ mod tests {
     fn urlencode_encodes_reserved() {
         assert_eq!(urlencode("a/b c"), "a%2Fb%20c");
         assert_eq!(urlencode("mosh-sync"), "mosh-sync");
+    }
+
+    #[test]
+    fn endpoint_normalization_only_fixes_bare_tencent_region() {
+        // 裸地域域名 → 补 cos. 服务前缀。
+        assert_eq!(
+            normalize_endpoint("ap-shanghai.myqcloud.com"),
+            "cos.ap-shanghai.myqcloud.com"
+        );
+        assert_eq!(
+            normalize_endpoint("eu-frankfurt.myqcloud.com"),
+            "cos.eu-frankfurt.myqcloud.com"
+        );
+        // 已带服务前缀 / 完整桶域名 / 内网域名 / 其他厂商：不动。
+        assert_eq!(
+            normalize_endpoint("cos.ap-shanghai.myqcloud.com"),
+            "cos.ap-shanghai.myqcloud.com"
+        );
+        assert_eq!(
+            normalize_endpoint("mosh-1258463625.cos.ap-shanghai.myqcloud.com"),
+            "mosh-1258463625.cos.ap-shanghai.myqcloud.com"
+        );
+        assert_eq!(
+            normalize_endpoint("cos-internal.ap-shanghai.myqcloud.com"),
+            "cos-internal.ap-shanghai.myqcloud.com"
+        );
+        assert_eq!(normalize_endpoint("s3.example.com"), "s3.example.com");
+        assert_eq!(normalize_endpoint(""), "");
     }
 }

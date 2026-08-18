@@ -22,16 +22,16 @@ import {
   listEvents as ipcListEvents,
   updateRecord as ipcUpdateRecord,
 } from "../lib/ipc";
-import type { EventInput, Record as RecordT, RecordPatch } from "../lib/types";
+import type { EventInput, RecordData, RecordPatch } from "../lib/types";
 
 /** 日历视图模式。 */
 export type CalMode = "month" | "week" | "day" | "agenda";
 
 interface CalendarState {
   /** 当前窗口内加载到内存的原始事件（编辑/查找用）。 */
-  events: RecordT[];
+  events: RecordData[];
   /** 展开周期后的渲染事件（occurrence id 带 `::` 后缀）。 */
-  renderEvents: RecordT[];
+  renderEvents: RecordData[];
   mode: CalMode;
   /** 当前聚焦日期 date-only。 */
   cursor: string;
@@ -48,9 +48,9 @@ interface CalendarState {
   startCreateEvent(dateOnly?: string): void;
   startEditEvent(id: string): void;
   closeEditor(): void;
-  createEvent(input: EventInput): Promise<RecordT>;
-  updateEvent(id: string, patch: RecordPatch): Promise<RecordT>;
-  cancelEvent(id: string): Promise<RecordT>;
+  createEvent(input: EventInput): Promise<RecordData>;
+  updateEvent(id: string, patch: RecordPatch): Promise<RecordData>;
+  cancelEvent(id: string): Promise<RecordData>;
   deleteEvent(id: string): Promise<void>;
 }
 
@@ -138,11 +138,11 @@ export const useCalendarStore = create<CalendarState>()((set, get) => ({
   },
 }));
 
-/** 当前编辑的事件：null=新建、undefined=关闭、RecordT=编辑中（派生）。 */
+/** 当前编辑的事件：null=新建、undefined=关闭、RecordData=编辑中（派生）。 */
 export function editingEventOf(
-  events: RecordT[],
+  events: RecordData[],
   editingId: string | null | undefined,
-): RecordT | null | undefined {
+): RecordData | null | undefined {
   if (editingId === undefined) return undefined;
   if (editingId === null) return null;
   return events.find((e) => e.id === editingId);

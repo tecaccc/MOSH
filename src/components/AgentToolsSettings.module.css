@@ -240,36 +240,38 @@
   line-height: 1.7;
 }
 
-.ok {
-  margin-bottom: 10px;
-  padding: 8px 12px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-radius: var(--radius-md);
-  font-size: 12.5px;
-  white-space: pre-wrap;
+/* MCP 测试连接识别到的工具展开列表 */
+.tool-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.err {
-  margin-bottom: 10px;
-  padding: 8px 12px;
-  background: var(--danger-soft);
-  color: var(--danger);
-  border-radius: var(--radius-md);
-  font-size: 12.5px;
+.tool-item {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
 }
 
-/* MCP 探测结果行 */
-.probe-line {
+.tool-item-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--mono, monospace);
+}
+
+.tool-item-desc {
   font-size: 11.5px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  line-height: 1.45;
+}
+
+.tool-item-params {
+  font-size: 10.5px;
   color: var(--text-muted);
-}
-
-.probe-line.ok {
-  color: var(--accent);
-}
-
-.probe-line.err {
-  color: var(--danger);
+  font-family: var(--mono, monospace);
+  margin-top: 3px;
   word-break: break-all;
 }

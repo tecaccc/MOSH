@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useAppStore } from "../state/store";
-import type { Priority, Record as RecordT } from "../lib/types";
+import type { Priority, RecordData as RecordT } from "../lib/types";
 import TodoItem from "./TodoItem";
 import styles from "./TasksView.module.css";
 

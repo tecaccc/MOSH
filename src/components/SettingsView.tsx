@@ -33,6 +33,7 @@ import type { AiConfig, CloseBehavior, StorageInfo } from "../lib/types";
 import { useAgentStore } from "../state/agent";
 import { useAppStore, type SettingsSection } from "../state/store";
 import { useProfileStore } from "../state/profile";
+import { toast } from "../state/toast";
 import { useUpdaterStore } from "../state/updater";
 import { useWeatherStore } from "../state/weather";
 import { CLOSE_BEHAVIORS } from "../lib/types";
@@ -174,15 +175,11 @@ export default function SettingsView() {
   const enabledMcpCount = agentMcpServers.filter((s) => s.enabled).length;
 
   // —— toast ——
-  const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null);
-  useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(null), 3500);
-    return () => clearTimeout(id);
-  }, [toast]);
-
+  // 操作反馈统一走全局 toast（state/toast，App 顶部图层向下弹出）；
+  // showToast 包装保留原调用点签名。
   function showToast(ok: boolean, text: string) {
-    setToast({ ok, text });
+    if (ok) toast.success(text);
+    else toast.error(text);
   }
 
   // —— 个人资料（名称/头像；首页与今日问候展示）——
@@ -470,14 +467,14 @@ export default function SettingsView() {
     }
   }
 
-  // 手动检查更新：结果仅 toast 反馈（有新版本时另弹右下角 UpdaterToast）。
+  // 手动检查更新：结果仅 toast 反馈（有新版本时另弹 UpdaterToast 卡片）。
   async function onCheckUpdate() {
     await useUpdaterStore.getState().check();
     const { phase, info } = useUpdaterStore.getState();
     if (phase === "upToDate") showToast(true, "已是最新版本 ✨");
     else if (phase === "error") showToast(false, "检查更新失败，请稍后重试");
     else if (phase === "available" && info)
-      showToast(true, `发现新版本 v${info.version}，可在右下角通知中更新`);
+      showToast(true, `发现新版本 v${info.version}，可在顶部通知中更新`);
   }
 
   // 当前表单名称对应的提供商图标（输入 DeepSeek 即时亮起）；模型列表同用。
@@ -1277,16 +1274,6 @@ export default function SettingsView() {
           </div>
         ) : null}
       </div>
-
-      {toast ? (
-        <div
-          className={`${styles.toast}${toast.ok ? ` ${styles.ok}` : ` ${styles.fail}`}`}
-          role="status"
-        >
-          <span className={styles["toast-ico"]}>{toast.ok ? "✓" : "!"}</span>
-          <span className={styles["toast-text"]}>{toast.text}</span>
-        </div>
-      ) : null}
     </section>
   );
 }

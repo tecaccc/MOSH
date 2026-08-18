@@ -17,7 +17,7 @@ import {
 } from "../lib/ipc";
 import type {
   Priority,
-  Record as RecordT,
+  RecordData,
   RecordPatch,
   Status,
   TodoInput,
@@ -39,7 +39,7 @@ export interface SettingsTarget {
 
 interface AppState {
   /** 当前加载到内存的全部（未软删）todo。 */
-  records: RecordT[];
+  records: RecordData[];
   /** 数据代次：AI 工具等外部变更后自增，视图靠它重载自己的事件窗口。 */
   dataVersion: number;
   currentView: View;
@@ -62,10 +62,10 @@ interface AppState {
   startCreate(): void;
   startEdit(id: string): void;
   closeEditor(): void;
-  createTodo(input: TodoInput): Promise<RecordT>;
-  updateRecord(id: string, patch: RecordPatch): Promise<RecordT>;
-  setTodoStatus(id: string, status: Status): Promise<RecordT>;
-  addSubtask(parentId: string, input: TodoInput): Promise<RecordT>;
+  createTodo(input: TodoInput): Promise<RecordData>;
+  updateRecord(id: string, patch: RecordPatch): Promise<RecordData>;
+  setTodoStatus(id: string, status: Status): Promise<RecordData>;
+  addSubtask(parentId: string, input: TodoInput): Promise<RecordData>;
   deleteRecord(id: string): Promise<void>;
 }
 
@@ -138,17 +138,17 @@ export const useAppStore = create<AppState>()((set) => ({
 // —— 派生纯函数（组件 useMemo 配用） ——
 
 /** 顶层 todo（parent_id==null）。 */
-export function topLevelTodos(records: RecordT[]): RecordT[] {
+export function topLevelTodos(records: RecordData[]): RecordData[] {
   return records.filter((r) => r.parent_id === null);
 }
 
 /** 取指定父的子任务。 */
-export function subtasksOf(records: RecordT[], parentId: string): RecordT[] {
+export function subtasksOf(records: RecordData[], parentId: string): RecordData[] {
   return records.filter((r) => r.parent_id === parentId);
 }
 
 /** 按 id 取当前内存中的 record。 */
-export function recordById(records: RecordT[], id: string): RecordT | undefined {
+export function recordById(records: RecordData[], id: string): RecordData | undefined {
   return records.find((r) => r.id === id);
 }
 
@@ -156,15 +156,15 @@ export function recordById(records: RecordT[], id: string): RecordT | undefined 
  * 当前编辑器绑定的 record：selectedId 对应；新建为 null；关闭为 undefined。
  */
 export function selectedRecordOf(
-  records: RecordT[],
+  records: RecordData[],
   selectedId: string | null | undefined,
-): RecordT | null | undefined {
+): RecordData | null | undefined {
   if (selectedId === undefined) return undefined;
   if (selectedId === null) return null;
   return recordById(records, selectedId);
 }
 
 /** 便捷：取 record.data.priority（缺省 "none"）。 */
-export function priorityOf(record: RecordT): Priority {
+export function priorityOf(record: RecordData): Priority {
   return record.data.priority ?? "none";
 }

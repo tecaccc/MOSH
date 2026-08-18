@@ -2,8 +2,8 @@ import { useUpdaterStore } from "../state/updater";
 import styles from "./UpdaterToast.module.css";
 
 /**
- * 版本更新通知卡（右下角）：检测到新版本时提示，确认后展示下载进度，
- * 安装完成自动重启进入新版本。检查动作由 App 启动钩子/设置页触发。
+ * 版本更新通知卡（App 顶部 toast-layer，从顶部落下）：检测到新版本时提示，
+ * 确认后展示下载进度，安装完成自动重启进入新版本。检查动作由 App 启动钩子/设置页触发。
  */
 
 const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
