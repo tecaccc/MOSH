@@ -334,3 +334,58 @@ export interface McpToolDetail {
   description: string;
   input_schema: Record<string, unknown>;
 }
+
+// —— 通知方式（系统/邮件；对齐 mosh-core::notify）——
+
+/** SMTP 加密方式。 */
+export type EmailEncryption = "starttls" | "ssl" | "none";
+
+/** 加密方式展示元数据（含各自缺省端口，切选项时联动回填表单）。 */
+export const EMAIL_ENCRYPTIONS: {
+  value: EmailEncryption;
+  label: string;
+  port: number;
+  desc: string;
+}[] = [
+  {
+    value: "starttls",
+    label: "STARTTLS（587）",
+    port: 587,
+    desc: "明文连入后升级加密，绝大多数邮箱（QQ/163/Gmail 等）推荐",
+  },
+  {
+    value: "ssl",
+    label: "SSL（465）",
+    port: 465,
+    desc: "从一开始就是加密连接（隐式 TLS），部分服务商默认开启",
+  },
+  {
+    value: "none",
+    label: "不加密（25）",
+    port: 25,
+    desc: "仅限本机/内网中继；凭据与内容明文传输，公网邮箱勿选",
+  },
+];
+
+/** SMTP 配置表单/入参（password 空串 = 保留已存值）。 */
+export interface EmailConfigInput {
+  host: string;
+  port: number;
+  encryption: EmailEncryption;
+  username: string;
+  password: string;
+  from: string;
+  to: string;
+}
+
+/** SMTP 配置回显（不含授权码）。 */
+export interface EmailConfigInfo extends Omit<EmailConfigInput, "password"> {
+  has_password: boolean;
+}
+
+/** 通知设置（回显形态；持久化在后端 settings 键 notify_settings）。 */
+export interface NotifySettingsInfo {
+  system: boolean;
+  email_enabled: boolean;
+  email: EmailConfigInfo | null;
+}

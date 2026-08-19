@@ -15,9 +15,11 @@ import type {
   AiConfig,
   CloseBehavior,
   CurrentWeather,
+  EmailConfigInput,
   EventInput,
   McpServerConfig,
   McpToolDetail,
+  NotifySettingsInfo,
   PermissionMode,
   RecordData as RecordT,
   RecordFilter,
@@ -279,6 +281,40 @@ export async function setMcpEnabled(id: string, enabled: boolean): Promise<void>
 /** 探测端点：连接并返回工具名列表（设置页“测试连接”）。 */
 export async function mcpListTools(baseUrl: string, token?: string | null): Promise<McpToolDetail[]> {
   return invoke<McpToolDetail[]>("mcp_list_tools", { baseUrl, token: token ?? null });
+}
+
+// —— 通知方式（系统/邮件）——
+
+/** 读通知设置回显（无设置 = 系统开、邮件关；不含授权码）。 */
+export async function getNotifySettings(): Promise<NotifySettingsInfo> {
+  return invoke<NotifySettingsInfo>("get_notify_settings");
+}
+
+/**
+ * 保存通知设置（整体覆盖；email.password 空串 = 保留已存授权码）。
+ * 入参为持久化形态（含回显里没有的授权码字段，空串即“不改”）。
+ */
+export async function saveNotifySettings(
+  settings: NotifySettingsSaveInput,
+): Promise<NotifySettingsInfo> {
+  return invoke<NotifySettingsInfo>("save_notify_settings", { settings });
+}
+
+/** 保存入参：回显形态 + 授权码（空串 = 不改，后端沿用已存值）。 */
+export interface NotifySettingsSaveInput {
+  system: boolean;
+  email_enabled: boolean;
+  email: EmailConfigInput | null;
+}
+
+/** 发送测试邮件（表单当前值；授权码空串时用已存值）。 */
+export async function testEmail(config: EmailConfigInput): Promise<void> {
+  await invoke<void>("test_email", { config });
+}
+
+/** 提醒到点发邮件（后端读已存设置；未启用时静默成功）。 */
+export async function notifySendEmail(subject: string, body: string): Promise<void> {
+  await invoke<void>("notify_send_email", { subject, body });
 }
 
 // —— 多设备同步（docs/sync-design.md）——

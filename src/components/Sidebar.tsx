@@ -9,6 +9,7 @@ import styles from "./Sidebar.module.css";
 const items: { key: View; label: string }[] = [
   { key: "home", label: "首页" },
   { key: "today", label: "今日" },
+  { key: "tasks", label: "待办" },
   { key: "calendar", label: "日历" },
   { key: "agent", label: "助手" },
   { key: "settings", label: "设置" },
@@ -32,6 +33,14 @@ const icons: Record<View, React.ReactNode> = {
       <rect x="3.5" y="5" width="17" height="16" rx="2.5" />
       <path d="M3.5 9.5h17" />
       <path d="M8 3v4M16 3v4" />
+    </svg>
+  ),
+  tasks: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="17" height="17">
+      <path d="M4 6l2 2 3.5-3.5" />
+      <path d="M4 12.5l2 2 3.5-3.5" />
+      <path d="M4 19l2 2 3.5-3.5" />
+      <path d="M13 6.5h7M13 13h7M13 19.5h7" />
     </svg>
   ),
   settings: (

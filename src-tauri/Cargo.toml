@@ -34,3 +34,6 @@ tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
 # 启动期配置文件（config.toml，自定义数据目录等）。
 toml = "0.8"
+# 邮件通知（SMTP 直发）：rustls 纯 Rust TLS 栈（与 sync/agent 一致，规避 OpenSSL），
+# tokio 异步执行（运行时由 tauri::async_runtime 提供）。
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }

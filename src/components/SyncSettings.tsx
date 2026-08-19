@@ -167,7 +167,7 @@ export default function SyncSettings() {
           <div className={styles.srow}>
             <div className={styles["srow-label"]}>
               <span className={styles["srow-name"]}>Bucket</span>
-              <span className={styles["srow-hint"]}>存储桶名称（建议私有读写）</span>
+              <span className={styles["srow-hint"]}>存储桶名称（腾讯云 COS 需带 APPID 后缀，如 mosh-sync-1250000000；建议私有读写）</span>
             </div>
             <input
               className={styles["srow-input"]}

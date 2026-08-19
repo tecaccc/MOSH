@@ -24,10 +24,18 @@ import type {
 } from "../lib/types";
 
 /** 视图枚举（对齐设计稿侧栏导航）。 */
-export type View = "home" | "today" | "calendar" | "agent" | "settings";
+export type View = "home" | "today" | "tasks" | "calendar" | "agent" | "settings";
 
 /** 设置页分区（与 SettingsView 的 SettingsSection 同构；深链用）。 */
-export type SettingsSection = "general" | "profile" | "sync" | "weather" | "ai" | "aitools" | "about";
+export type SettingsSection =
+  | "general"
+  | "profile"
+  | "notify"
+  | "sync"
+  | "weather"
+  | "ai"
+  | "aitools"
+  | "about";
 /** AI 工具子面板（深链用）。 */
 export type SettingsPane = "skills" | "mcp";
 

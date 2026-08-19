@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
 
+mod mail;
+
 /// 天气内存缓存有效期（节流，避免每次访问都打 API）。
 const WEATHER_TTL: Duration = Duration::from_secs(30 * 60);
 
@@ -890,6 +892,80 @@ async fn mcp_list_tools(
         .collect())
 }
 
+// —— 通知方式（系统/邮件；settings `notify_settings`）——
+
+/// 读通知设置回显（不含授权码；无设置回退默认：系统开、邮件关）。
+#[tauri::command]
+fn get_notify_settings(
+    state: State<'_, SqliteStorage>,
+) -> Result<mosh_core::notify::NotifySettingsInfo, String> {
+    Ok(mosh_core::notify::info_of(&load_notify_settings(&state)))
+}
+
+/// 保存通知设置（空授权码 = 保留原值；开启邮件需配置完整）。
+#[tauri::command]
+fn save_notify_settings(
+    settings: mosh_core::notify::NotifySettings,
+    state: State<'_, SqliteStorage>,
+) -> Result<mosh_core::notify::NotifySettingsInfo, String> {
+    let merged =
+        mosh_core::notify::merge_for_save(settings, &load_notify_settings(&state))?;
+    save_setting_value(&state, mosh_core::notify::KEY_NOTIFY, &merged)?;
+    Ok(mosh_core::notify::info_of(&merged))
+}
+
+/// 发送测试邮件（表单当前值；授权码留空时用已存值）。
+#[tauri::command]
+async fn test_email(
+    config: mosh_core::notify::EmailConfig,
+    state: State<'_, SqliteStorage>,
+) -> Result<(), String> {
+    let saved = load_notify_settings(&state);
+    let config = mosh_core::notify::merge_for_save(
+        mosh_core::notify::NotifySettings {
+            email: Some(config),
+            email_enabled: true,
+            ..Default::default()
+        },
+        &saved,
+    )?
+    .email
+    .expect("merge_for_save 校验通过时 email 必在");
+    mail::send_email(
+        &config,
+        "MOSH 测试邮件",
+        "这是一封来自 MOSH 的测试邮件——邮件通知配置正确，收件正常。",
+    )
+    .await
+}
+
+/// 提醒到点发邮件通知（前端 reminder 轮询触发；未启用时静默成功）。
+#[tauri::command]
+async fn notify_send_email(
+    subject: String,
+    body: String,
+    state: State<'_, SqliteStorage>,
+) -> Result<(), String> {
+    let settings = load_notify_settings(&state);
+    if !settings.email_enabled {
+        return Ok(());
+    }
+    let config = settings
+        .email
+        .as_ref()
+        .ok_or("邮件通知已开启但未配置 SMTP")?;
+    mail::send_email(config, &subject, &body).await
+}
+
+/// 读通知设置（缺省/损坏回退默认：系统通知开、邮件关）。
+fn load_notify_settings(state: &SqliteStorage) -> mosh_core::notify::NotifySettings {
+    load_setting_json::<mosh_core::notify::NotifySettings>(
+        state,
+        mosh_core::notify::KEY_NOTIFY,
+    )
+    .unwrap_or_default()
+}
+
 // —— 启动期配置文件（config.toml）：位于系统配置目录，不随数据目录移动 ——
 
 /// 配置文件名（位于 `app_config_dir()`）。
@@ -1696,6 +1772,10 @@ pub fn run() {
             delete_mcp_server,
             set_mcp_enabled,
             mcp_list_tools,
+            get_notify_settings,
+            save_notify_settings,
+            test_email,
+            notify_send_email,
             sync_get_config,
             sync_configure,
             sync_test_connection,

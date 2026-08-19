@@ -104,8 +104,14 @@ impl S3Client {
         if self.is_path_style() {
             return format!("https://{endpoint}/{bucket}");
         }
-        // 容错：用户常把控制台给的完整桶域名（含桶名）填进 endpoint。
-        if !bucket.is_empty() && endpoint.starts_with(&format!("{bucket}.")) {
+        // 容错：用户常把控制台给的完整桶域名（含桶名）填进 endpoint——
+        // 首标签等于桶名，或以「桶名-」开头（腾讯 COS 桶名带 -APPID 后缀、
+        // 桶字段填短名时）都视为已含桶名，直接用 endpoint，避免双重前缀
+        // （`mosh.mosh-125xxx.cos.…` 永远 404 NoSuchBucket）。
+        let first_label = endpoint.split('.').next().unwrap_or_default();
+        if !bucket.is_empty()
+            && (first_label == bucket || first_label.starts_with(&format!("{bucket}-")))
+        {
             return format!("https://{endpoint}");
         }
         format!("https://{bucket}.{endpoint}")
@@ -152,13 +158,21 @@ impl Remote for S3Client {
         }
     }
 
-    /// 取对象内容。404 → `Ok(None)`（远端尚无此设备 dump 属正常态）。
+    /// 取对象内容。404 → `Ok(None)`（远端尚无此设备 dump 属正常态）；
+    /// 但 404 的根因是「桶不存在」时必须报错，不能静默当作远端无数据。
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, CoreError> {
         let url = self.url(key);
         let resp = self.request_raw("GET", &url, &[], b"").await?;
         match resp.status().as_u16() {
             200 => Ok(Some(resp.bytes().await?.to_vec())),
-            404 => Ok(None),
+            404 => {
+                let bytes = resp.bytes().await?.to_vec();
+                let text = String::from_utf8_lossy(&bytes[..bytes.len().min(300)]).to_string();
+                if extract_tag(&text, "Code").as_deref() == Some("NoSuchBucket") {
+                    return Err(CoreError::Network(s3_request_error("GET", 404, &text)));
+                }
+                Ok(None)
+            }
             code => Err(CoreError::Network(format!("GET {key} 返回 {code}"))),
         }
     }
@@ -185,9 +199,7 @@ impl S3Client {
         let bytes = resp.bytes().await?.to_vec();
         if !(200..300).contains(&status) {
             let snippet = String::from_utf8_lossy(&bytes[..bytes.len().min(300)]).to_string();
-            return Err(CoreError::Network(format!(
-                "{method} 返回 {status}：{snippet}"
-            )));
+            return Err(CoreError::Network(s3_request_error(method, status, &snippet)));
         }
         Ok(bytes)
     }
@@ -410,6 +422,35 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     Some(xml[content_start..end].to_string())
 }
 
+/// 非 2xx 响应 → 可读错误：解析 S3 XML 错误体（`<Error><Code>…`），
+/// 常见码给排查提示，其余带 `Code: Message` 而非整段原始 XML；
+/// 非 XML 响应（部分网关/代理）则退回原样片段。
+fn s3_request_error(method: &str, status: u16, body: &str) -> String {
+    let code = extract_tag(body, "Code").unwrap_or_default();
+    let message = extract_tag(body, "Message").unwrap_or_default();
+    let hint = match code.as_str() {
+        // COS 头号坑：桶名必须带 -APPID 后缀（控制台里复制的是短名）；
+        // 其次 endpoint 地域与桶所在地域不一致（桶是地域资源）；或桶已删。
+        "NoSuchBucket" => Some(
+            "存储桶不存在：请检查①桶名是否完整（腾讯云 COS 必须带 APPID 后缀，\
+如 mosh-sync-1250000000）；②endpoint 地域与桶所在地域是否一致；③桶是否已被删除",
+        ),
+        "AccessDenied" => Some("访问被拒绝：请确认这对密钥拥有该桶的读写权限"),
+        "InvalidAccessKeyId" => Some("AccessKey 无效：请核对 SecretId 是否正确"),
+        "SignatureDoesNotMatch" => {
+            Some("签名不匹配：请核对 SecretKey（与 SecretId 配对）；region 与桶地域不一致也会导致此错")
+        }
+        _ => None,
+    };
+    match (hint, code.is_empty()) {
+        (Some(h), _) => format!("{method} 返回 {status}：{h}"),
+        // 已知但未映射的码：带 Code/Message，不再倾倒整段 XML。
+        (None, false) => format!("{method} 返回 {status}：{code}：{message}"),
+        // 非 XML 响应：原样片段。
+        (None, true) => format!("{method} 返回 {status}：{body}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,14 +502,20 @@ mod tests {
             c3.url("k"),
             "https://mosh-test.cos.ap-guangzhou.myqcloud.com/k"
         );
-        // 桶名仅是前缀而非整段时不去重（mosh-test ≠ mosh-test-1258463625）。
+        // 桶字段填短名、endpoint 带完整桶名（-APPID 后缀）也视为已含桶名，
+        // 不再双重前缀（`mosh-test.mosh-test-125xxx.…` 会 404 NoSuchBucket）。
         let mut cfg4 = config();
         cfg4.endpoint = "mosh-test-1258463625.cos.ap-guangzhou.myqcloud.com".into();
         let c4 = S3Client::new(cfg4).unwrap();
         assert_eq!(
             c4.url("k"),
-            "https://mosh-test.mosh-test-1258463625.cos.ap-guangzhou.myqcloud.com/k"
+            "https://mosh-test-1258463625.cos.ap-guangzhou.myqcloud.com/k"
         );
+        // 首标签与桶名无关时不误判（正常拼接）。
+        let mut cfg6 = config();
+        cfg6.endpoint = "s3.example.com".into();
+        let c6 = S3Client::new(cfg6).unwrap();
+        assert_eq!(c6.url("k"), "https://mosh-test.s3.example.com/k");
         // path 式：桶名进路径，host 不带桶前缀（MinIO 等自建网关）。
         let mut cfg5 = config();
         cfg5.addressing = "path".into();
@@ -559,6 +606,28 @@ mod tests {
     fn urlencode_encodes_reserved() {
         assert_eq!(urlencode("a/b c"), "a%2Fb%20c");
         assert_eq!(urlencode("mosh-sync"), "mosh-sync");
+    }
+
+    /// S3 错误体 → 可读错误：常见码带排查提示；未映射码带 Code/Message；
+    /// 非 XML 响应原样退回。
+    #[test]
+    fn s3_error_mapping() {
+        let nosuch = r#"<?xml version='1.0' encoding='utf-8' ?>
+<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist.</Message>
+<Resource>/</Resource></Error>"#;
+        let msg = s3_request_error("GET", 404, nosuch);
+        assert!(msg.starts_with("GET 返回 404：存储桶不存在"), "{msg}");
+        assert!(msg.contains("APPID") && msg.contains("地域"), "{msg}");
+
+        let denied = "<Error><Code>AccessDenied</Code><Message>denied</Message></Error>";
+        assert!(s3_request_error("GET", 403, denied).contains("读写权限"));
+
+        let unmapped = "<Error><Code>SlowDown</Code><Message>reduce request rate</Message></Error>";
+        let msg2 = s3_request_error("PUT", 503, unmapped);
+        assert!(msg2.starts_with("PUT 返回 503：SlowDown：reduce request rate"), "{msg2}");
+
+        // 非 XML（部分网关/代理）：原样片段。
+        assert_eq!(s3_request_error("GET", 502, "bad gateway"), "GET 返回 502：bad gateway");
     }
 
     #[test]

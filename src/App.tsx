@@ -7,12 +7,14 @@ import HomeView from "./components/HomeView";
 import Modal from "./components/Modal";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
+import TasksView from "./components/TasksView";
 import TitleBar from "./components/TitleBar";
 import ToastHost from "./components/ToastHost";
 import TodoEditor from "./components/TodoEditor";
 import TodayView from "./components/TodayView";
 import UpdaterToast from "./components/UpdaterToast";
 import { editingEventOf, useCalendarStore } from "./state/calendar";
+import { useAgentStore } from "./state/agent";
 import { useProfileStore } from "./state/profile";
 import { startReminders } from "./state/reminder";
 import { selectedRecordOf, useAppStore } from "./state/store";
@@ -64,9 +66,16 @@ export default function App() {
       document.removeEventListener("scroll", onScroll, { capture: true });
   }, []);
 
-  // 启动提醒轮询（系统通知；应用内 Toast 已移除）。
+  // 启动提醒轮询（按通知设置分发系统/邮件通道；应用内 Toast 已移除）。
   useEffect(() => {
     startReminders();
+  }, []);
+
+  // 启动即拉取技能/MCP 列表：agent store 的完整 init 只在聊天视图挂载时触发，
+  // 若不预热，打开应用直接进设置 → AI 工具时 MCP 列表/计数会是空的
+  // （已配置的服务器“不显示”BUG）。此处幂等预热，聊天视图挂载后 init 覆盖全量。
+  useEffect(() => {
+    void useAgentStore.getState().loadChatTools();
   }, []);
 
   // 启动后静默检查一次更新（延迟 8s 避免抢占启动资源；无更新/失败不打扰）。
@@ -106,6 +115,8 @@ export default function App() {
             <HomeView />
           ) : currentView === "today" ? (
             <TodayView />
+          ) : currentView === "tasks" ? (
+            <TasksView />
           ) : currentView === "calendar" ? (
             <CalendarPane />
           ) : currentView === "agent" ? (

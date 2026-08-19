@@ -1,11 +1,13 @@
 /**
  * 事件提醒 + 待办到期提醒（zustand；原 reminder.svelte.ts 迁移）。
  *
- * 每 60s 轮询，到点仅发**系统通知**（OS 通知中心）：
+ * 每 60s 轮询，到点按通知设置（设置 → 通知）分发：
+ *  - 系统通知：OS 通知中心（tauri-plugin-notification；默认开）；
+ *  - 邮件通知：后端 SMTP 直发（开启前需先在设置页配置并保存）。
+ *
  *  - 事件：未来 15 天窗口，展开周期后提醒时刻已到（事件尚未开始）；
  *  - 待办：active 且有截止时间的，到达截止时间后 60 分钟内提醒一次。
  *
- * 应用内 Toast 已按需求移除（2026-08-17）：系统通知为唯一提醒通道。
  * 已触发的提醒用模块级 _fired 去重（进程内记忆，不落库）；
  * 错过窗口（关机/未运行）不补发。
  */
@@ -17,8 +19,9 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { addDays, expandRecurring, reminderMinutesOf, todayOnly } from "../lib/calendar-grid";
 import { formatDateTime } from "../lib/datetime";
-import { listEvents, listRecords } from "../lib/ipc";
+import { listEvents, listRecords, notifySendEmail } from "../lib/ipc";
 import type { RecordData as RecordT } from "../lib/types";
+import { channelsOf, useNotifyStore } from "./notify";
 
 /** 待办到期后仍提醒的窗口（错过不补发）。 */
 const TODO_DUE_WINDOW_MS = 60 * 60_000;
@@ -56,7 +59,23 @@ async function notifySystem(title: string, body: string): Promise<void> {
   }
 }
 
-/** 轮询一次：事件提醒时刻到 + 待办到期 → 系统通知。 */
+/** 发邮件通知（SMTP 在后端；失败仅控制台留痕，不打断轮询）。 */
+async function notifyEmail(title: string, body: string): Promise<void> {
+  try {
+    await notifySendEmail(title, body);
+  } catch (e) {
+    console.warn(`[reminder] 邮件通知发送失败：${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** 按设置分发一条提醒（两个通道各自静默失败，互不阻塞）。 */
+function dispatch(title: string, body: string): void {
+  const ch = channelsOf();
+  if (ch.system) void notifySystem(title, body);
+  if (ch.email) void notifyEmail(`MOSH ${title}`, body);
+}
+
+/** 轮询一次：事件提醒时刻到 + 待办到期 → 按设置分发（系统/邮件）。 */
 async function poll(): Promise<void> {
   const now = Date.now();
 
@@ -79,7 +98,7 @@ async function poll(): Promise<void> {
     const key = keyOf(ev);
     if (now >= at && now < start && !_fired.has(key)) {
       _fired.add(key);
-      void notifySystem("日程提醒", `「${ev.title}」将于 ${formatDateTime(ev.start_at)} 开始`);
+      dispatch("日程提醒", `「${ev.title}」将于 ${formatDateTime(ev.start_at)} 开始`);
     }
   }
 
@@ -93,7 +112,7 @@ async function poll(): Promise<void> {
       const key = `todo::${t.id}::${t.end_at}`;
       if (now >= due && now < due + TODO_DUE_WINDOW_MS && !_fired.has(key)) {
         _fired.add(key);
-        void notifySystem("待办提醒", `「${t.title}」已到截止时间（${formatDateTime(t.end_at)}）`);
+        dispatch("待办提醒", `「${t.title}」已到截止时间（${formatDateTime(t.end_at)}）`);
       }
     }
   } catch {
@@ -107,6 +126,11 @@ export function startReminders(): void {
   _started = true;
   // 提前探测/请求系统通知权限（macOS 需要用户授权；Windows/Linux 通常默认允许）。
   void ensureNotifyPermission();
-  void poll();
-  setInterval(() => void poll(), 60_000);
+  // 每次轮询先刷新通知设置（设置页开关后 ≤60s 内生效）。
+  const pollWithSettings = async () => {
+    await useNotifyStore.getState().load();
+    await poll();
+  };
+  void pollWithSettings();
+  setInterval(() => void pollWithSettings(), 60_000);
 }
