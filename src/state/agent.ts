@@ -108,6 +108,8 @@ interface AgentState {
 
   init(): Promise<void>;
   refreshSessions(): Promise<void>;
+  /** 同步落地他机消息后刷新：会话列表必刷；空闲且当前会话已持久化时重放其消息。 */
+  reloadAfterSync(): Promise<void>;
   newSession(): void;
   openSession(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
@@ -297,6 +299,17 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       set({ sessions: await listAgentSessions() });
     } catch {
       /* 非 Tauri 环境忽略 */
+    }
+  },
+
+  /** 同步合并落地他机的聊天消息后：刷新会话侧栏（新会话/计数）；
+   * 空闲且当前会话已持久化时重放其消息（在途流式/新建未发送会话不覆盖）。 */
+  reloadAfterSync: async () => {
+    await get().refreshSessions();
+    if (get().streaming) return; // 流式中不重放（轮次结束/切换会话时自然看到）
+    const cur = get().currentSession;
+    if (cur && get().sessions.some((s) => s.session_id === cur)) {
+      await get().openSession(cur);
     }
   },
 

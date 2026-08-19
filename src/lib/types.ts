@@ -209,6 +209,10 @@ export interface SyncUi {
   phase: string;
   last_success_at: string | null;
   error: string | null;
+  /** 本次同步合并落地的记录/设置变更数；> 0 时刷新数据视图。 */
+  applied: number;
+  /** 本次同步新合并落地的聊天消息数；> 0 时刷新会话视图。 */
+  messages_applied: number;
 }
 
 /** 一次同步的结果统计。 */

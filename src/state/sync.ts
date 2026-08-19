@@ -1,7 +1,7 @@
 /**
  * 多设备同步（zustand）：状态点 + 设置页数据源。
  *
- * 生命周期：init（读配置 + 状态 + 订阅 `sync://status` 事件）→
+ * 生命周期：init（先订阅 `sync://status` 再读配置/状态，同步落地变更后刷新数据视图）→
  * saveConfig / importKey / setEnabled（写配置）→ syncNow（手动同步）。
  * 仅在 Tauri 环境生效（vite dev 浏览器直开时静默跳过）。
  *
@@ -23,6 +23,8 @@ import {
 } from "../lib/ipc";
 import { toast, useToastStore } from "./toast";
 import type { SyncConfigInfo, SyncConfigInput, SyncUi } from "../lib/types";
+import { useAgentStore } from "./agent";
+import { useAppStore } from "./store";
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -49,21 +51,19 @@ interface SyncState {
 
 export const useSyncStore = create<SyncState>((set, get) => ({
   config: null,
-  ui: { phase: "idle", last_success_at: null, error: null },
+  ui: { phase: "idle", last_success_at: null, error: null, applied: 0, messages_applied: 0 },
   generatedKey: null,
   busy: false,
 
   init: async () => {
     if (!inTauri || get().config) return;
-    try {
-      const [config, ui] = await Promise.all([syncGetConfig(), syncGetStatus()]);
-      set({ config, ui });
-    } catch (e) {
-      toast.error(`同步初始化失败：${e instanceof Error ? e.message : String(e)}`);
-    }
     // 后端事件驱动状态更新（启动拉/防抖推的进度对前端可见）；
     // 失败转全局 toast（含「重试」），恢复 syncing/idle 时收起错误卡。
+    // 同步合并落地变更时刷新对应视图——否则启动拉/他机变更只进库不进 UI，
+    // 需重启才能看到；纯推送（无落地变更）不触发，避免防抖推频繁重载。
+    let sawEvent = false;
     void listen<SyncUi>("sync://status", (event) => {
+      sawEvent = true;
       const ui = event.payload;
       if (ui.phase === "error" && ui.error) {
         const { push, dismiss } = useToastStore.getState();
@@ -76,7 +76,23 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         syncErrToastId = null;
       }
       set({ ui });
+      if (ui.phase === "idle") {
+        if (ui.applied > 0) void useAppStore.getState().refreshData();
+        if (ui.messages_applied > 0) void useAgentStore.getState().reloadAfterSync();
+      }
     });
+    try {
+      const [config, ui] = await Promise.all([syncGetConfig(), syncGetStatus()]);
+      set({ config, ui });
+      // 启动拉完成于监听注册前的漏事件场景：初始状态里已有落地变更则补刷；
+      // 事件已到过则不重复（sawEvent 路径已刷新）。
+      if (!sawEvent && ui.phase === "idle") {
+        if (ui.applied > 0) void useAppStore.getState().refreshData();
+        if (ui.messages_applied > 0) void useAgentStore.getState().reloadAfterSync();
+      }
+    } catch (e) {
+      toast.error(`同步初始化失败：${e instanceof Error ? e.message : String(e)}`);
+    }
   },
 
   saveConfig: async (input) => {

@@ -92,9 +92,11 @@ pub fn apply(db: &SqliteStorage, remotes: &[Dump]) -> Result<MergeStats, CoreErr
             }
         }
         for remote in &dump.agent_messages {
-            // 并集：append 的 UPSERT 语义，已存在则无操作。
-            db.append_agent_message(remote)?;
-            stats.messages_applied += 1;
+            // 并集：append 的 UPSERT 语义；仅统计真正新插入的行
+            // （幂等重放已存在行不计——计数是同步事件的门控信号，须反映真实变更）。
+            if db.append_agent_message(remote)? {
+                stats.messages_applied += 1;
+            }
         }
     }
     Ok(stats)
@@ -242,7 +244,7 @@ mod tests {
         let stats = apply(&db, &[remote]).unwrap();
         assert_eq!(stats.records_applied, 2);
         assert_eq!(stats.settings_applied, 1);
-        assert_eq!(stats.messages_applied, 2); // 计数含已存在行（尝试应用）
+        assert_eq!(stats.messages_applied, 1); // 仅 m2 新插入；m1 已存在不计（幂等）
 
         let t1 = db.get("t1").unwrap();
         assert_eq!(t1.revision, 2);
@@ -309,6 +311,7 @@ mod tests {
         let stats = apply(&db, &[remote]).unwrap();
         assert_eq!(stats.records_applied, 0);
         assert_eq!(stats.settings_applied, 0);
+        assert_eq!(stats.messages_applied, 0);
         assert_eq!(db.get("t1").unwrap(), once);
         assert_eq!(db.list_agent_messages("s1").unwrap().len(), 1);
     }

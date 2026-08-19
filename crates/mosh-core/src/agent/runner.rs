@@ -366,6 +366,7 @@ fn persist_text(db: &SqliteStorage, session_id: &str, content: &str) -> Result<(
         tool_result: None,
         created_at: now_iso(),
     })
+    .map(|_| ())
 }
 
 #[cfg(test)]

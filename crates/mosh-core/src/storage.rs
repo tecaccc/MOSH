@@ -380,8 +380,9 @@ impl SqliteStorage {
     // —— Agent 会话消息（见 agent 模块 design §3）——
 
     /// 追加一条会话消息（user/assistant/tool）。`id` 为空时自动生成 UUIDv7；
-    /// 显式 id 用于同步合并回放。
-    pub fn append_agent_message(&self, msg: &AgentMessage) -> Result<(), CoreError> {
+    /// 显式 id 用于同步合并回放（同 id 已存在则忽略，append-only 并集语义）。
+    /// 返回 `true` = 新插入；`false` = 已存在被忽略（同步幂等重放）。
+    pub fn append_agent_message(&self, msg: &AgentMessage) -> Result<bool, CoreError> {
         mark_dirty();
         let conn = self.lock()?;
         let id = if msg.id.is_empty() {
@@ -389,7 +390,7 @@ impl SqliteStorage {
         } else {
             msg.id.clone()
         };
-        conn.execute(
+        let n = conn.execute(
             "INSERT INTO agent_messages
              (id, session_id, role, content, tool_name, tool_args, tool_result, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -405,7 +406,7 @@ impl SqliteStorage {
                 msg.created_at
             ],
         )?;
-        Ok(())
+        Ok(n > 0)
     }
 
     /// 全部会话消息（跨会话，同步 dump 用），按 created_at 升序。

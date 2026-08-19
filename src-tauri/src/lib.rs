@@ -1153,6 +1153,12 @@ struct SyncUi {
     phase: String,
     last_success_at: Option<String>,
     error: Option<String>,
+    /// 本次同步合并落地的记录/设置变更数（records+settings）。
+    /// > 0 时前端刷新数据视图——纯推送（无远端变更）不触发重载，避免防抖推
+    /// 每次都 dataVersion++ 引发事件视图无谓重载。
+    applied: u32,
+    /// 本次同步新合并落地的聊天消息数（仅真实新插入行；门控会话视图刷新）。
+    messages_applied: u32,
 }
 
 /// 进程内同步状态（命令可查 + 事件可推）。
@@ -1218,6 +1224,8 @@ async fn run_sync(app: tauri::AppHandle) {
     let mut ui = sync_ui_of(&app);
     ui.phase = "syncing".into();
     ui.error = None;
+    ui.applied = 0;
+    ui.messages_applied = 0;
     set_sync_ui(&app, ui.clone());
     let result = match sync_remote_of(&state) {
         Ok(client) => mosh_core::sync::full_sync(&state, &client)
@@ -1227,13 +1235,18 @@ async fn run_sync(app: tauri::AppHandle) {
     };
     let mut ui = sync_ui_of(&app);
     match result {
-        Ok(_) => {
+        Ok(out) => {
             ui.phase = "idle".into();
             ui.last_success_at = mosh_core::model::now_iso().into();
             ui.error = None;
+            ui.applied =
+                (out.stats.records_applied + out.stats.settings_applied) as u32;
+            ui.messages_applied = out.stats.messages_applied as u32;
         }
         Err(e) => {
             ui.phase = "error".into();
+            ui.applied = 0;
+            ui.messages_applied = 0;
             ui.error = Some(e);
         }
     }
