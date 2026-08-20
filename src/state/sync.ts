@@ -2,8 +2,8 @@
  * 多设备同步（zustand）：状态点 + 设置页数据源。
  *
  * 生命周期：init（先订阅 `sync://status` 再读配置/状态，同步落地变更后刷新数据视图）→
- * saveConfig / importKey / setEnabled（写配置）→ syncNow（手动同步）。
- * 仅在 Tauri 环境生效（vite dev 浏览器直开时静默跳过）。
+ * saveConfig / importKey / setEnabled（写配置）→ syncNow（手动同步，设置页与
+ * 标题栏按钮共用）。仅在 Tauri 环境生效（vite dev 浏览器直开时静默跳过）。
  *
  * 操作反馈统一走全局 toast（state/toast）：手动同步失败与后台（启动拉/
  * 防抖推）失败同源——都由 `sync://status`（phase=error）事件弹 toast
@@ -146,7 +146,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 
   // 手动同步失败不在此报 toast：后端 sync_now 与后台失败一样会推
   // `sync://status`（phase=error）事件，由 init 里的监听统一弹出。
+  // 入口不唯一（设置页/标题栏按钮/失败 toast 重试），进行中直接忽略防并发。
   syncNow: async () => {
+    const { busy, ui } = get();
+    if (busy || ui.phase === "syncing") return;
     set({ busy: true });
     try {
       const outcome = await syncNow();

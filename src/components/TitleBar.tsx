@@ -7,8 +7,10 @@ import styles from "./TitleBar.module.css";
 /**
  * 自定义窗口标题栏（decorations: false）：左段与 Sidebar 同宽同色，
  * 右为 Windows 风格窗口按钮。空白区域可拖动窗口。浏览器直开时按钮 no-op。
- * 助手视图时，最小化按钮左侧额外提供「会话历史」显隐开关（跨组件状态在
- * app store 的 chatSideVisible，由 ChatPanel 消费）。
+ * 最小化左侧附加功能按钮：同步触发（启用同步时展示，图标即状态——
+ * syncing=强调色旋转、error=红、idle=常色，点击手动触发立即同步）与
+ * 「会话历史」显隐开关（助手视图；跨组件状态在 app store 的
+ * chatSideVisible，由 ChatPanel 消费）。
  */
 
 const inTauri = "__TAURI_INTERNALS__" in window;
@@ -18,10 +20,23 @@ export default function TitleBar() {
   const currentView = useAppStore((s) => s.currentView);
   const chatSideVisible = useAppStore((s) => s.chatSideVisible);
   const toggleChatSide = useAppStore((s) => s.toggleChatSide);
-  // 同步状态点（仅启用时展示；syncing=旋转、idle=绿、error=红，title 提示详情）。
+  // 同步按钮（仅启用时展示）：点击手动触发立即同步（syncNow）；
+  // busy 覆盖设置页保存配置等操作进行中，此时同样禁用防并发。
   const syncEnabled = useSyncStore((s) => s.config?.enabled === true);
   const syncPhase = useSyncStore((s) => s.ui.phase);
   const syncError = useSyncStore((s) => s.ui.error);
+  const syncLastSuccess = useSyncStore((s) => s.ui.last_success_at);
+  const syncBusy = useSyncStore((s) => s.busy);
+  const syncNow = useSyncStore((s) => s.syncNow);
+  const syncRunning = syncBusy || syncPhase === "syncing";
+  const syncTitle =
+    syncPhase === "syncing"
+      ? "同步中…"
+      : syncPhase === "error"
+        ? `上次同步失败：${syncError ?? "未知错误"}（点击重试）`
+        : syncLastSuccess
+          ? `立即同步（上次成功：${syncLastSuccess.replace("T", " ").slice(0, 16)}）`
+          : "立即同步";
 
   useEffect(() => {
     if (!inTauri) return;
@@ -54,18 +69,20 @@ export default function TitleBar() {
       <div className={styles["tb-main"]} data-tauri-drag-region />
       <div className={styles.tbActions}>
         {syncEnabled ? (
-          <span
-            className={styles["tb-sync"]}
+          <button
+            type="button"
+            className={`${styles["tb-btn"]} ${styles["tb-sync"]}`}
             data-phase={syncPhase}
-            title={
-              syncPhase === "syncing"
-                ? "同步中…"
-                : syncPhase === "error"
-                  ? `同步失败：${syncError ?? "未知错误"}`
-                  : "多设备同步已启用"
-            }
-            aria-label="同步状态"
-          />
+            aria-label={syncTitle}
+            title={syncTitle}
+            disabled={syncRunning}
+            onClick={() => void syncNow()}
+          >
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="23 4 23 10 17 10" />
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+            </svg>
+          </button>
         ) : null}
         {currentView === "agent" ? (
           <button

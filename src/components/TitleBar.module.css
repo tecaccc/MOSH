@@ -84,27 +84,45 @@
   }
 }
 
-/* 同步状态点（启用同步时展示） */
+/* 同步触发按钮（启用同步时展示，最小化左侧）：与窗口按钮同规格但可点击；
+   图标随 phase 呈现状态——syncing=强调色旋转、error=红、idle=常色。
+   悬停 title 提示详情（错误原因/上次成功时间）。 */
 .tb-sync {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 10px;
-  align-self: center;
-  flex-shrink: 0;
-  background: var(--pri-low);
+  cursor: pointer;
+  color: var(--text-muted);
+  border-left: 1px solid var(--border-soft);
+  border-right: 1px solid var(--border-soft);
 }
 
-.tb-sync[data-phase="syncing"] {
-  background: var(--accent);
-  animation: tb-sync-pulse 1s ease-in-out infinite;
+/* 相邻功能按钮（同步与会话历史同现时）不叠双分隔线。 */
+.tb-sync + .tb-chat {
+  border-left: none;
 }
 
 .tb-sync[data-phase="error"] {
-  background: var(--danger);
+  color: var(--danger);
 }
 
-@keyframes tb-sync-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
+.tb-sync[data-phase="syncing"] {
+  color: var(--accent);
+}
+
+.tb-sync[data-phase="syncing"] svg {
+  animation: tb-sync-spin 1s linear infinite;
+}
+
+.tb-sync:disabled {
+  cursor: default;
+}
+
+/* disabled 元素仍匹配 :hover，压掉悬停反馈但保留状态色（同步中仍旋转）。 */
+.tb-sync:disabled:hover,
+.tb-sync:disabled:active {
+  background: none;
+}
+
+@keyframes tb-sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
