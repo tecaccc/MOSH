@@ -41,6 +41,16 @@ pub struct AgentSessionSummary {
     pub message_count: i64,
 }
 
+/// 已删除会话的墓碑（`agent_session_tombstones` 表）：消息本身是 append-only
+/// 并集合并，删除动作无法经消息传播——墓碑集合同为只增并集，同步时以此压制
+/// 他机旧 dump 里的会话消息（会话 id 为每会话新生的 UUID，不会重用撞墓碑）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTombstone {
+    pub session_id: String,
+    /// 首次删除时间（ISO8601；仅诊断用，合并取并集不比较时间）。
+    pub deleted_at: String,
+}
+
 /// settings 全量行（同步 dump / 合并用）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingRow {
@@ -118,6 +128,17 @@ fn migrations() -> Migrations<'static> {
         DROP TABLE agent_messages;
         ALTER TABLE agent_messages_v5 RENAME TO agent_messages;
         CREATE INDEX idx_agent_messages_session ON agent_messages(session_id);
+        "#,
+        ),
+        // v6：会话删除墓碑——agent_messages 为 append-only 并集合并，删除无法经消息
+        // 传播；墓碑表只增不删，同步时并集合并并压制对应会话的消息（否则删除的
+        // 会话会被他机旧 dump 复活，见 sync design §3.3）。
+        M::up(
+            r#"
+        CREATE TABLE agent_session_tombstones (
+          session_id TEXT PRIMARY KEY,
+          deleted_at TEXT NOT NULL
+        );
         "#,
         ),
     ])
@@ -431,14 +452,71 @@ impl SqliteStorage {
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
-    /// 删除整个会话（全部消息行）；返回删除行数。
+    /// 删除整个会话（全部消息行）并记墓碑（同步压制他机旧 dump 复活）；返回删除行数。
     pub fn delete_agent_session(&self, session_id: &str) -> Result<usize, CoreError> {
+        mark_dirty();
         let conn = self.lock()?;
         let n = conn.execute(
             "DELETE FROM agent_messages WHERE session_id = ?1",
             params![session_id],
         )?;
+        conn.execute(
+            "INSERT INTO agent_session_tombstones (session_id, deleted_at) VALUES (?1, ?2)
+             ON CONFLICT(session_id) DO NOTHING",
+            params![session_id, crate::model::now_iso()],
+        )?;
         Ok(n)
+    }
+
+    /// 全部会话墓碑（dump 上行/回显用）。
+    pub fn list_session_tombstones(&self) -> Result<Vec<SessionTombstone>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT session_id, deleted_at FROM agent_session_tombstones")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SessionTombstone {
+                session_id: row.get(0)?,
+                deleted_at: row.get(1)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
+    /// 会话是否已删（合并时过滤该会话消息用）。
+    pub fn session_tombstoned(&self, session_id: &str) -> Result<bool, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT 1 FROM agent_session_tombstones WHERE session_id = ?1",
+        )?;
+        let exists = stmt.exists(params![session_id])?;
+        Ok(exists)
+    }
+
+    /// 并集合并远端墓碑：首见则入库，并清掉本地残留的该会话消息（设备尚未拉到
+    /// 墓碑时他机 dump 可能已先把消息插回）。返回清理的本地消息行数（作为
+    /// messages_applied 计入统计——删除也是需要刷新 UI 的消息变更）。
+    pub fn apply_session_tombstones(
+        &self,
+        tombs: &[SessionTombstone],
+    ) -> Result<usize, CoreError> {
+        if tombs.is_empty() {
+            return Ok(0);
+        }
+        mark_dirty();
+        let conn = self.lock()?;
+        let mut cleaned = 0usize;
+        for t in tombs {
+            conn.execute(
+                "INSERT INTO agent_session_tombstones (session_id, deleted_at) VALUES (?1, ?2)
+                 ON CONFLICT(session_id) DO NOTHING",
+                params![t.session_id, t.deleted_at],
+            )?;
+            cleaned += conn.execute(
+                "DELETE FROM agent_messages WHERE session_id = ?1",
+                params![t.session_id],
+            )?;
+        }
+        Ok(cleaned)
     }
 
     /// 会话摘要（最近活跃在前）。标题取首条 user 消息截断。
@@ -892,6 +970,11 @@ mod tests {
 
         // 重复删除 → 0 行，不报错。
         assert_eq!(db.delete_agent_session("s1").unwrap(), 0);
+
+        // 删除记墓碑（同步压制复活）；重复删除不重复记。
+        assert!(db.session_tombstoned("s1").unwrap());
+        assert!(!db.session_tombstoned("s2").unwrap());
+        assert_eq!(db.list_session_tombstones().unwrap().len(), 1);
     }
 
     #[test]

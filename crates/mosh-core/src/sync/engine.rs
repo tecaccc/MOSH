@@ -314,6 +314,57 @@ mod tests {
         );
     }
 
+    /// 删除会话后同步不得复活（BUG：一方删除 AI 会话/待办/日程，点同步又同步出来）。
+    ///
+    /// 复现路径：A 删会话 → A 点同步 → 拉到 B 的旧 dump（仍含该会话全部消息）→
+    /// 并集合并把消息原样插回 → 会话在删除它的那台设备上当场复活。
+    /// 待办/日程走墓碑 LWW，同场景一并断言不得复活。
+    #[tokio::test]
+    async fn deleted_records_and_sessions_stay_deleted_after_sync() {
+        let remote = MemoryRemote::default();
+        let key = crypto::encode_key(&crypto::generate_key());
+
+        // A：一条待办 + 一个会话，同步上云。
+        let a = device(&key, "a");
+        a.insert(&rec("t1", "旧待办", "2020-01-01T09:00:00+00:00"))
+            .unwrap();
+        a.append_agent_message(&AgentMessage {
+            id: String::new(),
+            session_id: "s1".into(),
+            role: "user".into(),
+            content: "你好".into(),
+            tool_name: None,
+            tool_args: None,
+            tool_result: None,
+            created_at: "2020-01-01T09:00:00+00:00".into(),
+        })
+        .unwrap();
+        full_sync(&a, &remote).await.unwrap();
+
+        // B 拉取 → 两者均到达。
+        let b = device(&key, "b");
+        full_sync(&b, &remote).await.unwrap();
+        assert!(b.get("t1").is_ok());
+        assert_eq!(b.list_agent_messages("s1").unwrap().len(), 1);
+
+        // A 删除待办与整个会话，点「立即同步」：拉到 B 的 dump（两者仍在）。
+        a.soft_delete("t1").unwrap();
+        a.delete_agent_session("s1").unwrap();
+        full_sync(&a, &remote).await.unwrap();
+        // 删除不得在删除者木机复活（BUG 现象：点同步又同步出来）。
+        assert!(a.list_agent_messages("s1").unwrap().is_empty());
+        assert!(a.list_agent_sessions().unwrap().is_empty());
+        assert!(a.get("t1").unwrap().deleted_at.is_some());
+
+        // B 再同步：删除传播且稳定（反复同步不复活）。
+        full_sync(&b, &remote).await.unwrap();
+        assert!(b.list_agent_messages("s1").unwrap().is_empty());
+        assert!(b.list_agent_sessions().unwrap().is_empty());
+        assert!(b.get("t1").unwrap().deleted_at.is_some());
+        full_sync(&b, &remote).await.unwrap();
+        assert!(b.list_agent_sessions().unwrap().is_empty());
+    }
+
     /// 密钥不匹配的远端对象：跳过且不阻塞（换钥重置场景的另一半仍可同步）。
     #[tokio::test]
     async fn wrong_key_dump_is_skipped() {

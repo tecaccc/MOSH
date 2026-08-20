@@ -5,7 +5,7 @@
 
 use crate::error::CoreError;
 use crate::model::Record;
-use crate::storage::{AgentMessage, SettingRow, SqliteStorage};
+use crate::storage::{AgentMessage, SessionTombstone, SettingRow, SqliteStorage};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
@@ -29,6 +29,10 @@ pub struct Dump {
     pub settings: Vec<SettingRow>,
     /// 全量 agent 会话消息。
     pub agent_messages: Vec<AgentMessage>,
+    /// 已删会话墓碑（并集合并；压制他机旧 dump 里的会话消息复活）。
+    /// `#[serde(default)]`：v1 旧 dump 无此字段——首见空集，协议版本不升级。
+    #[serde(default)]
+    pub deleted_sessions: Vec<SessionTombstone>,
 }
 
 /// 从本地库抓取全量快照。
@@ -47,6 +51,7 @@ pub fn capture(db: &SqliteStorage, device_id: &str) -> Result<Dump, CoreError> {
             .filter(|row| !is_device_local(&row.key))
             .collect(),
         agent_messages: db.list_all_agent_messages()?,
+        deleted_sessions: db.list_session_tombstones()?,
     })
 }
 
@@ -159,5 +164,28 @@ mod tests {
     #[test]
     fn corrupted_gzip_rejected() {
         assert!(from_bytes(b"not gzip at all").is_err());
+    }
+
+    #[test]
+    fn deleted_sessions_roundtrip() {
+        let db = sample_db();
+        db.delete_agent_session("s1").unwrap();
+        let dump = capture(&db, "device-a").unwrap();
+        assert!(dump.agent_messages.is_empty());
+        assert_eq!(dump.deleted_sessions.len(), 1);
+        assert_eq!(dump.deleted_sessions[0].session_id, "s1");
+        let back = from_bytes(&to_bytes(&dump).unwrap()).unwrap();
+        assert_eq!(back.deleted_sessions, dump.deleted_sessions);
+    }
+
+    #[test]
+    fn v1_dump_without_tombstone_field_parses() {
+        // v1 旧客户端 dump 无 deleted_sessions 字段 → serde default 空集（协议不升版）。
+        let json = r#"{"version":1,"device_id":"old","dumped_at":"2026-08-01T00:00:00+00:00","records":[],"settings":[],"agent_messages":[]}"#;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(json.as_bytes()).unwrap();
+        let bytes = gz.finish().unwrap();
+        let dump = from_bytes(&bytes).unwrap();
+        assert!(dump.deleted_sessions.is_empty());
     }
 }

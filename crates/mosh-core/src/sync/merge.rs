@@ -4,7 +4,9 @@
 //! - **records**：按 id 对齐；`updated_at` 新者赢，同值比 `revision`，再同值保留本地（幂等）。
 //!   墓碑是普通记录（`deleted_at` 非空），走同一规则——删除动作由此传播。
 //! - **settings**：按 key，`updated_at` 新者赢；`sync.*` 设备本地键直接忽略。
-//! - **agent_messages**：按 id 并集（append-only 不可变，`ON CONFLICT DO NOTHING`）。
+//! - **agent_messages**：按 id 并集（append-only 不可变，`ON CONFLICT DO NOTHING`）；
+//!   已删会话（`deleted_sessions` 墓碑，同为只增并集）的消息不入库，本地残留
+//!   一并清理——否则删除的会话会被他机旧 dump 复活。
 //!
 //! 交替使用的前提（同秒并发概率≈0）使 LWW 足够；旧的静默丢弃，无冲突 UI。
 
@@ -91,7 +93,14 @@ pub fn apply(db: &SqliteStorage, remotes: &[Dump]) -> Result<MergeStats, CoreErr
                 stats.settings_applied += 1;
             }
         }
+        // 会话墓碑先落地（并集）：清理本地残留消息，并为本 dump 及后续 dump 的
+        // 消息过滤提供依据（表查询与 dump 应用顺序无关）。
+        stats.messages_applied += db.apply_session_tombstones(&dump.deleted_sessions)?;
         for remote in &dump.agent_messages {
+            // 已删会话的消息不入库：他机尚未拉到墓碑的旧 dump 仍携带它们。
+            if db.session_tombstoned(&remote.session_id)? {
+                continue;
+            }
             // 并集：append 的 UPSERT 语义；仅统计真正新插入的行
             // （幂等重放已存在行不计——计数是同步事件的门控信号，须反映真实变更）。
             if db.append_agent_message(remote)? {
@@ -106,7 +115,7 @@ pub fn apply(db: &SqliteStorage, remotes: &[Dump]) -> Result<MergeStats, CoreErr
 mod tests {
     use super::*;
     use crate::model::{Kind, Status};
-    use crate::storage::AgentMessage;
+    use crate::storage::{AgentMessage, SessionTombstone};
 
     fn rec(id: &str, updated_at: &str, revision: i64) -> Record {
         Record {
@@ -162,6 +171,7 @@ mod tests {
             records,
             settings,
             agent_messages: messages,
+            deleted_sessions: vec![],
         }
     }
 
@@ -294,6 +304,37 @@ mod tests {
         // 常规列表不再可见。
         let visible = db.list(&crate::model::RecordFilter::default()).unwrap();
         assert!(visible.is_empty());
+    }
+
+    #[test]
+    fn session_tombstone_cleans_local_and_blocks_stale_dump() {
+        // 场景：本机 s1/s2 有消息；远端 dump 携带 s1 墓碑 + s1 旧消息
+        // （他机拉到墓碑前的快照）+ s2 新消息。
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.append_agent_message(&msg("m1", "s1")).unwrap();
+        db.append_agent_message(&msg("m2", "s2")).unwrap();
+        let remote = Dump {
+            version: 1,
+            device_id: "peer".into(),
+            dumped_at: "2026-08-18T10:00:00+00:00".into(),
+            records: vec![],
+            settings: vec![],
+            agent_messages: vec![msg("m1", "s1"), msg("m3", "s2")],
+            deleted_sessions: vec![SessionTombstone {
+                session_id: "s1".into(),
+                deleted_at: "2026-08-18T12:00:00+00:00".into(),
+            }],
+        };
+        let stats = apply(&db, &[remote.clone()]).unwrap();
+        // s1：本地消息清理 + 旧消息不插回；s2：新消息到达。
+        assert!(db.list_agent_messages("s1").unwrap().is_empty());
+        assert!(db.list_agent_sessions().unwrap().iter().all(|s| s.session_id != "s1"));
+        assert_eq!(db.list_agent_messages("s2").unwrap().len(), 2);
+        // 计数含清理（m1）与新插入（m3）——均为需刷新 UI 的消息变更。
+        assert_eq!(stats.messages_applied, 2);
+        // 幂等：重放同 dump 无新变更。
+        let again = apply(&db, &[remote]).unwrap();
+        assert_eq!(again.messages_applied, 0);
     }
 
     #[test]

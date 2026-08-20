@@ -58,7 +58,13 @@ mosh-sync/                     ← bucket 内约定前缀
 - **agent_messages**：按 `id` 并集合并（append-only，天然无冲突）。
 - **settings**：按键覆盖，晚写赢（以 dump 时间戳为准）。
 - **墓碑**：软删记录（`deleted_at` 非空）永久保留在同步流中，v1 不做 GC，
-  天然保留"误删找回"余地。
+  天然保留“误删找回”余地。
+- **会话墓碑**（2026-08-20 补）：`agent_messages` 的并集合并无法传播删除——
+  一方删会话后，他机旧 dump 会把消息原样插回，会话复活。因此删除会话时在
+  `agent_session_tombstones` 表记墓碑（只增不删，同样并集合并）；合并时清理
+  本地该会话消息、且不再插入该会话的任何消息。会话 id 为每会话新生的 UUID，
+  不会重用撞墓碑。dump 新增 `deleted_sessions` 字段（`serde(default)`，旧客户端
+  双向兼容，协议版本仍为 1）。
 
 ### 3.4 同步范围
 
