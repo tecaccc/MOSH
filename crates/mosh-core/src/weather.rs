@@ -1,10 +1,12 @@
 //! Open-Meteo 天气：geocoding（城市查询串→经纬度/timezone）+ forecast（经纬度→当前天气）。无 API key。
 //!
-//! 两步（城市坐标由调用方持久化复用，见 `src-tauri` 的 `get_current_weather`；本模块纯无状态）：
+//! 三步（城市坐标由调用方持久化复用，见 `src-tauri` 的 `get_current_weather`；本模块纯无状态）：
 //!
 //! ```text
-//! 1) geocode  GET geocoding-api.open-meteo.com/v1/search?name=<q>&count=1&language=zh
-//! 2) forecast GET api.open-meteo.com/v1/forecast?latitude=&longitude=
+//! 1) search   GET geocoding-api.open-meteo.com/v1/search?name=<q>&count=10&language=zh
+//!            （多候选：选城市用；geocode 单结果：旧设置首次取数解析坐标）
+//! 2) geocode  GET 同上 ?count=1（单结果：旧设置只有 query 时首次取数解析坐标）
+//! 3) forecast GET api.open-meteo.com/v1/forecast?latitude=&longitude=
 //!             &current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code
 //!             &timezone=<tz|auto>
 //! ```
@@ -55,6 +57,24 @@ const GEOCODE_URL: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
 const CURRENT_VARS: &str = "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code";
 
+/// 城市搜索候选（选城市用；含中文展示名与省/市消歧字段，数据源 GeoNames）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CityCandidate {
+    /// 城市名（`language=zh` 时为中文名）。
+    pub name: String,
+    /// 一级行政区（省/州），如「浙江」；可缺。
+    pub admin1: Option<String>,
+    /// 二级行政区（地级市），如「杭州市」；可缺。
+    pub admin2: Option<String>,
+    pub latitude: f64,
+    pub longitude: f64,
+    /// IANA 时区，如 `Asia/Shanghai`；可缺。
+    pub timezone: Option<String>,
+    /// 人口（排序参考；可缺）。
+    #[serde(default)]
+    pub population: Option<u64>,
+}
+
 /// geocoding 返回（仅取需要的字段）。
 #[derive(Debug, Deserialize)]
 struct GeocodeResponse {
@@ -64,9 +84,17 @@ struct GeocodeResponse {
 
 #[derive(Debug, Deserialize)]
 struct GeocodeResult {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    admin1: Option<String>,
+    #[serde(default)]
+    admin2: Option<String>,
     latitude: f64,
     longitude: f64,
     timezone: Option<String>,
+    #[serde(default)]
+    population: Option<u64>,
 }
 
 /// forecast 返回的 `current` 子集。
@@ -81,6 +109,40 @@ struct ForecastCurrent {
     apparent_temperature: f64,
     relative_humidity_2m: f64,
     weather_code: u8,
+}
+
+/// 城市搜索（多候选）：中文名/拼音全拼均可；空结果返回空 Vec（不报错）。
+/// 候选按人口降序——重名城市（朝阳/杭州…）靠 admin1/admin2 在 UI 消歧。
+pub async fn search_cities(
+    client: &reqwest::Client,
+    query: &str,
+) -> Result<Vec<CityCandidate>, CoreError> {
+    let resp: GeocodeResponse = client
+        .get(GEOCODE_URL)
+        .query(&[("name", query), ("count", "10"), ("language", "zh")])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let mut list = resp.results.unwrap_or_default();
+    list.sort_by(|a, b| {
+        b.population
+            .unwrap_or(0)
+            .cmp(&a.population.unwrap_or(0))
+    });
+    Ok(list
+        .into_iter()
+        .map(|r| CityCandidate {
+            name: r.name,
+            admin1: r.admin1,
+            admin2: r.admin2,
+            latitude: r.latitude,
+            longitude: r.longitude,
+            timezone: r.timezone,
+            population: r.population,
+        })
+        .collect())
 }
 
 /// 用查询串解析城市经纬度/timezone。无结果 ⇒ `Weather("未找到该城市")`。
@@ -187,5 +249,42 @@ mod tests {
         let json = r#"{"generationtime_ms":0.019}"#;
         let g: GeocodeResponse = serde_json::from_str(json).unwrap();
         assert!(g.results.is_none());
+    }
+
+    /// 搜索样本（真实响应裁剪）：多候选含 admin1/admin2/population，
+    /// 重名城市（朝阳）靠这些字段消歧。无 results 键 → 空 Vec。
+    #[test]
+    fn parse_search_results_and_sort_by_population() {
+        let json = r#"{"results":[
+            {"id":8398083,"name":"朝阳","latitude":31.4,"longitude":109.05,
+             "country_code":"CN","admin1":"重庆市","admin2":"重庆市",
+             "timezone":"Asia/Shanghai","population":13524},
+            {"id":2038580,"name":"朝阳","latitude":41.57,"longitude":120.45,
+             "country_code":"CN","admin1":"辽宁","admin2":"朝阳市",
+             "timezone":"Asia/Shanghai","population":3044527}],
+          "generationtime_ms":0.3}"#;
+        let g: GeocodeResponse = serde_json::from_str(json).unwrap();
+        let mut list = g.results.unwrap();
+        list.sort_by(|a, b| {
+            b.population.unwrap_or(0).cmp(&a.population.unwrap_or(0))
+        });
+        // 人口多的辽宁朝阳排前。
+        assert_eq!(list[0].admin1.as_deref(), Some("辽宁"));
+        assert_eq!(list[0].population, Some(3044527));
+        assert_eq!(list[1].admin1.as_deref(), Some("重庆市"));
+
+        // 候选序列化（Tauri 命令返回值）字段完整。
+        let c = CityCandidate {
+            name: list[0].name.clone(),
+            admin1: list[0].admin1.clone(),
+            admin2: list[0].admin2.clone(),
+            latitude: list[0].latitude,
+            longitude: list[0].longitude,
+            timezone: list[0].timezone.clone(),
+            population: list[0].population,
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["admin1"], "辽宁");
+        assert!(v["latitude"].as_f64().unwrap() > 41.0);
     }
 }

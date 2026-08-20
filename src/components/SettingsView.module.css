@@ -1059,3 +1059,90 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* —— 城市搜索选择器（天气设置；combobox） —— */
+
+.city-picker {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.city-input {
+  min-width: 220px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.city-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.city-drop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 260px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.city-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.city-item:hover {
+  background: var(--accent-soft, rgb(255 255 255 / 6%));
+}
+
+.city-name {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.city-admin {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.city-hint {
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.city-current {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}

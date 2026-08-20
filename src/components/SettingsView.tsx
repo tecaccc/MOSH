@@ -14,9 +14,9 @@ import OpenRouter from "@lobehub/icons/es/OpenRouter";
 import Qwen from "@lobehub/icons/es/Qwen";
 import XAI from "@lobehub/icons/es/XAI";
 import Zhipu from "@lobehub/icons/es/Zhipu";
-import { CITIES } from "../lib/cities";
 import { McpPane, SkillsPane } from "./AgentToolsSettings";
 import Avatar from "./Avatar";
+import CityPicker from "./CityPicker";
 import NotifySettings from "./NotifySettings";
 import SyncSettings from "./SyncSettings";
 import {
@@ -134,10 +134,8 @@ export default function SettingsView() {
   const wStatus = useWeatherStore((s) => s.status);
   const weather = useWeatherStore((s) => s.weather);
   const cityName = useWeatherStore((s) => s.cityName);
-  const cityQuery = useWeatherStore((s) => s.cityQuery);
   const weatherError = useWeatherStore((s) => s.error);
   const loadWeather = useWeatherStore((s) => s.loadWeather);
-  const selectCity = useWeatherStore((s) => s.selectCity);
   const refreshWeather = useWeatherStore((s) => s.refreshWeather);
   const info = weather ? weatherInfo(weather.weather_code) : null;
 
@@ -869,21 +867,9 @@ export default function SettingsView() {
                 <div className={styles.srow}>
                   <div className={styles["srow-label"]}>
                     <span className={styles["srow-name"]}>城市</span>
-                    <span className={styles["srow-hint"]}>用于首页天气展示。坐标首次取数时解析并复用。</span>
+                    <span className={styles["srow-hint"]}>支持中文或拼音搜索，全国及全球城市可选；同名城市靠省份区分。</span>
                   </div>
-                  <select
-                    className={styles["srow-select"]}
-                    value={cityQuery}
-                    onChange={(e) => {
-                      const q = e.currentTarget.value;
-                      if (q) void selectCity(q);
-                    }}
-                  >
-                    <option value="">选择城市…</option>
-                    {CITIES.map((c) => (
-                      <option key={c.query} value={c.query}>{c.name}</option>
-                    ))}
-                  </select>
+                  <CityPicker />
                 </div>
                 <div className={styles.sdivider} />
 

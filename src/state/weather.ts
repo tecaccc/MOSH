@@ -3,7 +3,7 @@
  *
  * 数据流不变：前端永不直连 Open-Meteo，所有请求经 ipc → Rust。
  * loadWeather() = 读配置 →（未配置则 unconfigured）→ 取数；
- * selectCity(q) = 写配置（后端清坐标/缓存）→ 取数；
+ * selectCity(q, c?) = 写配置（可选携带搜索候选的坐标/展示名，免二次 geocode）→ 取数；
  * refreshWeather() = 强制重取（后端 TTL 节流）。
  */
 
@@ -27,8 +27,15 @@ interface WeatherState {
   error: string;
 
   loadWeather(): Promise<void>;
-  selectCity(query: string): Promise<void>;
+  selectCity(query: string, candidate?: { name: string } & Coordinates): Promise<void>;
   refreshWeather(): Promise<void>;
+}
+
+/** 搜索候选携带的坐标部分（直存免二次 geocode）。 */
+interface Coordinates {
+  latitude: number;
+  longitude: number;
+  timezone?: string | null;
 }
 
 /** 取数核心：按 cityQuery 状态机取数。 */
@@ -78,9 +85,19 @@ export const useWeatherStore = create<WeatherState>()((set) => ({
     await fetchWeather(set);
   },
 
-  selectCity: async (query) => {
-    await ipcSetCity(query);
-    set({ cityQuery: query, cityName: cityNameOf(query) });
+  selectCity: async (query, candidate) => {
+    await ipcSetCity(
+      query,
+      candidate
+        ? {
+            lat: candidate.latitude,
+            lng: candidate.longitude,
+            tz: candidate.timezone ?? null,
+          }
+        : null,
+    );
+    // 展示名：候选优先（中文名）；否则旧预设表反查，再回退 query 原值。
+    set({ cityQuery: query, cityName: candidate?.name ?? cityNameOf(query) });
     await fetchWeather(set);
   },
 

@@ -123,20 +123,19 @@ fn get_weather_config(state: State<'_, SqliteStorage>) -> Result<Option<WeatherC
     Ok(cfg.filter(|c| !c.query.is_empty()))
 }
 
-/// 设置当前城市（`query` 为 geocode 查询串）。切换城市会清空已缓存坐标与内存天气，
-/// 下次 `get_current_weather` 对新城重新 geocode。
+/// 设置当前城市（`query` 为 geocode 查询串）。可选携带坐标/时区（搜索候选直选时
+/// 已解析，免二次 geocode；也规避重名词 count=1 解析到错误地点）。未携带则清空
+/// 已缓存坐标与内存天气，下次 `get_current_weather` 对新城重新 geocode（旧设置兼容路径）。
 #[tauri::command]
 fn set_city(
     query: String,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    tz: Option<String>,
     state: State<'_, SqliteStorage>,
     cache: State<'_, WeatherCache>,
 ) -> Result<(), String> {
-    let cfg = WeatherConfig {
-        query,
-        lat: None,
-        lng: None,
-        tz: None,
-    };
+    let cfg = WeatherConfig { query, lat, lng, tz };
     let serialized = serde_json::to_string(&cfg).map_err(|e| e.to_string())?;
     state
         .set_setting("weather", &serialized)
@@ -146,6 +145,17 @@ fn set_city(
         *guard = None;
     }
     Ok(())
+}
+
+/// 城市搜索（多候选；中文名/拼音全拼均可）。设置页选城市用，数据源 GeoNames。
+#[tauri::command]
+async fn search_cities(
+    query: String,
+    client: State<'_, HttpClient>,
+) -> Result<Vec<mosh_core::weather::CityCandidate>, String> {
+    mosh_core::weather::search_cities(&client, &query)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 取当前天气。`None` = 未配置城市；`Some` = 有数据（新取或同城市缓存回退）；
@@ -1755,6 +1765,7 @@ pub fn run() {
             delete_record,
             get_weather_config,
             set_city,
+            search_cities,
             get_current_weather,
             get_profile,
             set_profile,

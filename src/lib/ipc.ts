@@ -13,6 +13,7 @@ import type {
   AgentMessage,
   AgentSessionSummary,
   AiConfig,
+  CityCandidate,
   CloseBehavior,
   CurrentWeather,
   EmailConfigInput,
@@ -97,11 +98,24 @@ export async function getWeatherConfig(): Promise<WeatherConfig | null> {
 }
 
 /**
- * 设置当前城市（`query` 为 geocode 查询串）。切换城市会清空已缓存坐标，
- * 下次取天气对新城市重新 geocode。
+ * 设置当前城市（`query` 为展示名/geocode 查询串）。可选携带坐标/时区（搜索候选
+ * 直选时已有，免二次 geocode）；未携带则后端清坐标，下次取数重新解析。
  */
-export async function setCity(query: string): Promise<void> {
-  await invoke<void>("set_city", { query });
+export async function setCity(
+  query: string,
+  coords?: { lat: number; lng: number; tz?: string | null } | null,
+): Promise<void> {
+  await invoke<void>("set_city", {
+    query,
+    lat: coords?.lat ?? null,
+    lng: coords?.lng ?? null,
+    tz: coords?.tz ?? null,
+  });
+}
+
+/** 城市搜索（多候选；中文名/拼音全拼，≥2 字符由调用方把关）。 */
+export async function searchCities(query: string): Promise<CityCandidate[]> {
+  return invoke<CityCandidate[]>("search_cities", { query });
 }
 
 /**

@@ -152,6 +152,17 @@ export interface WeatherConfig {
   tz?: string | null;
 }
 
+/** 城市搜索候选（设置页选城市；数据源 GeoNames，同名城市靠 admin 消歧）。 */
+export interface CityCandidate {
+  name: string;
+  admin1?: string | null;
+  admin2?: string | null;
+  latitude: number;
+  longitude: number;
+  timezone?: string | null;
+  population?: number | null;
+}
+
 // —— 个人资料（settings key=profile；首页/今日问候与头像展示用） ——
 
 /**
