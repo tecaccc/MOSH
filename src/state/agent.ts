@@ -208,9 +208,10 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     } catch {
       /* 非 Tauri 环境忽略 */
     }
-    // 恢复最近会话（若有）。
-    if (get().sessions.length > 0 && !get().currentSession) {
-      await get().openSession(get().sessions[0].session_id);
+    // 默认落在新会话页（空输入位，首条消息发送时自然成会话）；
+    // 历史会话从右侧侧栏点开——不再自动恢复最近会话，避免误接旧上下文。
+    if (!get().currentSession) {
+      get().newSession();
     }
     if (!listenersBound) {
       listenersBound = true;
@@ -397,15 +398,14 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     set({ currentSession: crypto.randomUUID(), messages: [], error: null });
   },
 
-  /** 删除会话：删库 + 刷新列表；删的是当前会话则另起一个空的。 */
+  /** 删除会话：删库 + 刷新列表；删的是当前会话则另起一个空的新会话页
+   * （与「打开聊天默认新会话」一致；后端墓碑同时拦截在途轮次的滞后写入）。 */
   deleteSession: async (id) => {
     try {
       await deleteAgentSession(id);
       await get().refreshSessions();
       if (get().currentSession === id) {
         get().newSession();
-        const next = get().sessions[0]?.session_id;
-        if (next) await get().openSession(next);
       }
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });

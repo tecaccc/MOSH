@@ -5,9 +5,13 @@
   overflow: hidden;
 }
 
+/* 行高 minmax(0,1fr)：行确切等于容器高——否则隐式 auto 行随内容长高，
+   main-view 的 height:100% 链条失真，内部滚动容器永远等不到溢出
+   （待办页“条目超出页面但没有滚动条”的外层成因）。 */
 .app {
   display: grid;
   grid-template-columns: 248px 1fr;
+  grid-template-rows: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -67,7 +71,7 @@
   }
 
   .app:has(.editor-pane) {
-    grid-template-rows: 1fr auto;
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .editor-pane {

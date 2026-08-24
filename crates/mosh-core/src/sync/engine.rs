@@ -27,6 +27,9 @@ pub const KEY_LAST_SYNC_AT: &str = "sync.last_sync_at";
 pub const KEY_ADDRESSING: &str = "sync.addressing";
 pub const KEY_TIMEOUT: &str = "sync.timeout";
 pub const KEY_TLS_VERIFY: &str = "sync.tls_verify";
+/// 远端已有同步数据但本机无密钥：configure 探测后置位，导入密钥后清除。
+/// 置位期间不生成新钥（防止密钥不一致分叉），配置页提示导入。
+pub const KEY_NEEDS_KEY_IMPORT: &str = "sync.needs_key_import";
 
 /// 远端存储抽象（list / get / put）。
 pub trait Remote {
@@ -350,6 +353,19 @@ mod tests {
         // A 删除待办与整个会话，点「立即同步」：拉到 B 的 dump（两者仍在）。
         a.soft_delete("t1").unwrap();
         a.delete_agent_session("s1").unwrap();
+        // 删除后在途轮次的滞后写入（如回复落地）不得复活会话（墓碑拒写）。
+        assert!(!a
+            .append_agent_message(&AgentMessage {
+                id: String::new(),
+                session_id: "s1".into(),
+                role: "assistant".into(),
+                content: "迟到的回复".into(),
+                tool_name: None,
+                tool_args: None,
+                tool_result: None,
+                created_at: "2026-08-18T09:00:01+00:00".into(),
+            })
+            .unwrap());
         full_sync(&a, &remote).await.unwrap();
         // 删除不得在删除者木机复活（BUG 现象：点同步又同步出来）。
         assert!(a.list_agent_messages("s1").unwrap().is_empty());

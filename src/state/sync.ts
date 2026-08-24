@@ -24,6 +24,7 @@ import {
 import { toast, useToastStore } from "./toast";
 import type { SyncConfigInfo, SyncConfigInput, SyncUi } from "../lib/types";
 import { useAgentStore } from "./agent";
+import { useProfileStore } from "./profile";
 import { useAppStore } from "./store";
 
 const inTauri = "__TAURI_INTERNALS__" in window;
@@ -77,7 +78,12 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       }
       set({ ui });
       if (ui.phase === "idle") {
-        if (ui.applied > 0) void useAppStore.getState().refreshData();
+        // 有落地变更时刷新对应视图——个人资料存在 settings（随 dump 同步），
+        // 他机改名/换头像后本机首页/侧栏问候即时生效，不再需重启。
+        if (ui.applied > 0) {
+          void useAppStore.getState().refreshData();
+          void useProfileStore.getState().load().catch(() => {});
+        }
         if (ui.messages_applied > 0) void useAgentStore.getState().reloadAfterSync();
       }
     });
@@ -87,7 +93,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       // 启动拉完成于监听注册前的漏事件场景：初始状态里已有落地变更则补刷；
       // 事件已到过则不重复（sawEvent 路径已刷新）。
       if (!sawEvent && ui.phase === "idle") {
-        if (ui.applied > 0) void useAppStore.getState().refreshData();
+        if (ui.applied > 0) {
+          void useAppStore.getState().refreshData();
+          void useProfileStore.getState().load().catch(() => {});
+        }
         if (ui.messages_applied > 0) void useAgentStore.getState().reloadAfterSync();
       }
     } catch (e) {
@@ -100,11 +109,16 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     try {
       const config = await syncConfigure(input);
       set({ config, generatedKey: config.generated_key ?? null });
-      toast.success(
-        config.generated_key
-          ? "配置已保存，并生成了新的加密密钥（见下方卡片，请立即抄录）"
-          : "同步配置已保存。",
-      );
+      if (config.generated_key) {
+        toast.success("配置已保存，并生成了新的加密密钥（见下方卡片，请立即抄录）");
+      } else if (config.needs_key_import) {
+        toast.info(
+          "远端已有同步数据：为避免密钥不一致，未生成新密钥。请在下方「加密密钥」导入原设备的密钥后再启用同步。",
+          { ttl: 10000 },
+        );
+      } else {
+        toast.success("同步配置已保存。");
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
       throw e;
@@ -133,7 +147,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       await syncImportKey(key);
       const config = await syncGetConfig();
       set({ config });
-      toast.success("密钥已导入。");
+      toast.success("密钥已导入，现在可以启用同步了。");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
       throw e;

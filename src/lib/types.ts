@@ -200,6 +200,8 @@ export interface SyncConfigInfo {
   /** 是否校验 TLS 证书。 */
   tls_verify: boolean;
   generated_key?: string;
+  /** 远端已有同步数据但本机无密钥：需从旧设备导入后才能启用同步。 */
+  needs_key_import?: boolean;
 }
 
 /** 同步配置保存输入（secret_key 留空 = 保留原值；高级项缺省 = 默认值）。 */

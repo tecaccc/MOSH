@@ -1022,6 +1022,53 @@
   margin-top: 8px;
 }
 
+/* 待导入密钥警告卡：远端已有数据但本机无钥（保存配置探测到） */
+.sync-warn {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--pri-high) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+}
+.sync-warn-ico {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--pri-high);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: 1px;
+}
+.sync-warn-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+.sync-warn-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sync-warn-text {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.sync-warn-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .sync-toggle {
   position: relative;
   width: 40px;

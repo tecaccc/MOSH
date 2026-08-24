@@ -61,6 +61,8 @@ export default function SyncSettings() {
 
   const parsedTimeout = Math.min(600, Math.max(5, parseInt(timeout, 10) || 30));
   const configured = !!config && config.has_secret && !!config.endpoint;
+  /** 远端已有数据但本机无钥：醒目警告 + 阻止启用，直到导入密钥。 */
+  const needsKeyImport = !!config?.needs_key_import && !config.has_key;
   const canSave =
     !busy && endpoint.trim() && bucket.trim() && accessKey.trim() && (secretKey.trim() || config?.has_secret);
 
@@ -277,6 +279,34 @@ export default function SyncSettings() {
           <div className={styles.sdivider} />
         </div>
 
+        {/* ====== 待导入密钥警告（远端已有数据）====== */}
+        {needsKeyImport ? (
+          <div className={styles.sgroup}>
+            <div className={styles.stitle}>需要导入加密密钥</div>
+            <div className={styles.sdivider} />
+            <div className={styles["sync-warn"]}>
+              <span className={styles["sync-warn-ico"]} aria-hidden="true">!</span>
+              <div className={styles["sync-warn-main"]}>
+                <div className={styles["sync-warn-title"]}>远端存储已有同步数据，本机尚未持有密钥</div>
+                <div className={styles["sync-warn-text"]}>
+                  为避免各设备密钥不一致（互相解不开对方备份、云端数据分叉覆盖），本机不会自动生成新密钥。
+                  请在任意一台已同步的设备上「复制密钥」后粘贴到下方导入；导入时会自动校验能否解密远端数据。
+                </div>
+                <div className={styles["sync-warn-actions"]}>
+                  <button
+                    type="button"
+                    className={styles["sync-btn"]}
+                    onClick={() => setShowKeyInput(true)}
+                  >
+                    前往导入密钥
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className={styles.sdivider} />
+          </div>
+        ) : null}
+
         {/* ====== 新加密密钥（仅此一次展示）====== */}
         {generatedKey ? (
           <div className={styles.sgroup}>
@@ -312,12 +342,16 @@ export default function SyncSettings() {
           <div className={styles.srow}>
             <div className={styles["srow-label"]}>
               <span className={styles["srow-name"]}>启用同步</span>
-              <span className={styles["srow-hint"]}>启动时自动拉取；本地变更 5 秒后自动推送；退出时兜底推送。空闲时零网络请求。</span>
+              <span className={styles["srow-hint"]}>
+                {config?.has_key
+                  ? "启动时自动拉取；本地变更 5 秒后自动推送；退出时兜底推送。空闲时零网络请求。"
+                  : "请先在下方「加密密钥」导入原设备的密钥后再启用。"}
+              </span>
             </div>
             <button
               type="button"
               className={`${styles["sync-toggle"]}${config?.enabled ? ` ${styles.on}` : ""}`}
-              disabled={!configured || busy}
+              disabled={!configured || busy || !config?.has_key}
               onClick={() => void setEnabled(!config?.enabled)}
               aria-pressed={!!config?.enabled}
             >
@@ -346,6 +380,11 @@ export default function SyncSettings() {
           ) : (
             <div className={`${styles.preview} ${styles.dim}`}>填写并保存远端配置后即可启用同步。</div>
           )}
+          {configured && !config?.has_key ? (
+            <div className={`${styles.preview} ${styles.dim}`}>
+              配置已保存，但还差最后一步：在下方「加密密钥」导入原设备的密钥。
+            </div>
+          ) : null}
           <div className={styles.sdivider} />
         </div>
 

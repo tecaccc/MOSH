@@ -1,0 +1,175 @@
+/* 日历区间筛选：触发按钮 + 下拉弹层月历（周一起始）。 */
+
+.range {
+  position: relative;
+}
+
+.range-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-1);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.range-btn:hover {
+  color: var(--text);
+}
+.range-btn.on {
+  color: var(--text);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/* 透明遮罩：点空白收起弹层 */
+.cal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  border: none;
+  background: transparent;
+  cursor: default;
+  padding: 0;
+}
+
+/* 弹层月历：向下弹出，固定宽度（7 × ~40px 格） */
+.cal {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 41;
+  width: 308px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 14%);
+}
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cal-nav {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cal-nav:hover {
+  background: var(--surface-1);
+  color: var(--text);
+}
+
+.cal-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.cal-cell {
+  position: relative;
+  height: 34px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.cal-cell:hover {
+  background: var(--surface-1);
+}
+.cal-cell.muted {
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+/* 今天：底部小圆点标记 */
+.cal-cell.today::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translateX(-50%);
+}
+.cal-cell.inrange {
+  background: var(--accent-soft);
+}
+.cal-cell.sel {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+.cal-cell.sel.today::after {
+  background: var(--accent-fg);
+}
+
+.cal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+.cal-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  flex: 1;
+}
+.cal-foot-btns {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.cal-today,
+.cal-clear {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 3px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cal-today:hover,
+.cal-clear:hover {
+  background: var(--accent-soft);
+}

@@ -402,10 +402,19 @@ impl SqliteStorage {
 
     /// 追加一条会话消息（user/assistant/tool）。`id` 为空时自动生成 UUIDv7；
     /// 显式 id 用于同步合并回放（同 id 已存在则忽略，append-only 并集语义）。
-    /// 返回 `true` = 新插入；`false` = 已存在被忽略（同步幂等重放）。
+    /// 返回 `true` = 新插入；`false` = 已存在被忽略（同步幂等重放）或会话已删
+    /// （墓碑拒写：删除后到达的滞后写入——如在途轮次的回复落地——不得让会话复活）。
     pub fn append_agent_message(&self, msg: &AgentMessage) -> Result<bool, CoreError> {
-        mark_dirty();
         let conn = self.lock()?;
+        // 墓碑检查与插入同一锁内：先查后插的窗口期里并发删除会凭空复活会话。
+        {
+            let mut stmt = conn
+                .prepare("SELECT 1 FROM agent_session_tombstones WHERE session_id = ?1")?;
+            if stmt.exists(params![msg.session_id])? {
+                return Ok(false);
+            }
+        }
+        mark_dirty();
         let id = if msg.id.is_empty() {
             crate::model::new_id()
         } else {
@@ -975,6 +984,25 @@ mod tests {
         assert!(db.session_tombstoned("s1").unwrap());
         assert!(!db.session_tombstoned("s2").unwrap());
         assert_eq!(db.list_session_tombstones().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn append_to_tombstoned_session_is_rejected() {
+        // BUG：删除会话后，在途轮次的回复（或任何滞后写入）落地会让会话凭空复活。
+        // 墓碑拒写：append 对已删会话返回 false 且不插入。
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.append_agent_message(&agent_msg("s1", "user", "你好"))
+            .unwrap();
+        db.delete_agent_session("s1").unwrap();
+
+        let inserted = db
+            .append_agent_message(&agent_msg("s1", "assistant", "迟到的回复"))
+            .unwrap();
+        assert!(!inserted);
+        assert!(db.list_agent_messages("s1").unwrap().is_empty());
+        assert!(db.list_agent_sessions().unwrap().is_empty());
+        // 未删会话不受影响。
+        assert!(db.append_agent_message(&agent_msg("s2", "user", "x")).unwrap());
     }
 
     #[test]

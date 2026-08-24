@@ -49,6 +49,13 @@ export function formatDate(dateStr: string | null | undefined): string {
   return `${parseInt(mo, 10)}月${parseInt(da, 10)}日`;
 }
 
+/** Date → 本地日期键 `YYYY-MM-DD`（日期区间比较用；不用 toISOString 免时区错位）。 */
+export function dateKeyOf(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
+
 /** ISO8601 → 日期短串（如 "8月13日"；跨年带年份如 "2025年12月30日"）。空/非法 → ""。 */
 export function formatDayShort(iso: string | null | undefined): string {
   if (!iso) return "";

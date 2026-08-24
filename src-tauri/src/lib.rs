@@ -1302,6 +1302,10 @@ struct SyncConfigInfo {
     /// 仅在本次 configure 首次生成密钥时返回一次（前端弹窗供抄录）。
     #[serde(skip_serializing_if = "Option::is_none")]
     generated_key: Option<String>,
+    /// 远端已有同步数据但本机无密钥：需从旧设备导入后才能启用同步
+    /// （configure 探测到远端对象时置位，导入密钥后清除）。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    needs_key_import: bool,
 }
 
 fn sync_config_info(state: &SqliteStorage) -> SyncConfigInfo {
@@ -1312,6 +1316,7 @@ fn sync_config_info(state: &SqliteStorage) -> SyncConfigInfo {
             .flatten()
             .filter(|s| !s.is_empty())
     };
+    let has_key = get(mosh_core::sync::engine::KEY_SYNC_KEY).is_some();
     SyncConfigInfo {
         enabled: get(mosh_core::sync::engine::KEY_ENABLED).as_deref() == Some("true"),
         endpoint: get(mosh_core::sync::engine::KEY_ENDPOINT).unwrap_or_default(),
@@ -1319,7 +1324,7 @@ fn sync_config_info(state: &SqliteStorage) -> SyncConfigInfo {
         bucket: get(mosh_core::sync::engine::KEY_BUCKET).unwrap_or_default(),
         access_key: get(mosh_core::sync::engine::KEY_ACCESS_KEY).unwrap_or_default(),
         has_secret: get(mosh_core::sync::engine::KEY_SECRET_KEY).is_some(),
-        has_key: get(mosh_core::sync::engine::KEY_SYNC_KEY).is_some(),
+        has_key,
         device_id: get(mosh_core::sync::engine::KEY_DEVICE_ID),
         last_sync_at: get(mosh_core::sync::engine::KEY_LAST_SYNC_AT),
         addressing: get(mosh_core::sync::engine::KEY_ADDRESSING)
@@ -1331,6 +1336,8 @@ fn sync_config_info(state: &SqliteStorage) -> SyncConfigInfo {
             .map(|s| s != "false")
             .unwrap_or(true),
         generated_key: None,
+        needs_key_import: !has_key
+            && get(mosh_core::sync::engine::KEY_NEEDS_KEY_IMPORT).as_deref() == Some("true"),
     }
 }
 
@@ -1352,22 +1359,75 @@ struct SyncConfigInput {
     tls_verify: Option<bool>,
 }
 
-/// 保存远端配置。首次保存时生成 device_id 与加密密钥（密钥返回一次，
-/// 供用户抄录到新设备；此后可随时 sync_export_key 再取）。
-/// endpoint 若填了完整桶域名（含桶名），去掉冗余前缀后存储。
-#[tauri::command]
-fn sync_configure(
-    input: SyncConfigInput,
-    state: State<'_, SqliteStorage>,
-) -> Result<SyncConfigInfo, String> {
+/// 表单输入 → S3 客户端：endpoint 容错（协议前缀 / 完整桶域名前缀）+
+/// secret 留空回退已存值（编辑已有配置时）。测试连接与保存配置的
+/// 远端探测共用（须先经入参校验）。
+fn s3_client_from_input(
+    input: &SyncConfigInput,
+    state: &SqliteStorage,
+) -> Result<S3Client, String> {
     use mosh_core::sync::engine as eng;
-    let mut endpoint = input
+    let mut endpoint = normalized_endpoint_of(input);
+    let bucket = input.bucket.trim();
+    if let Some(rest) = endpoint.strip_prefix(&format!("{}.", bucket)) {
+        endpoint = rest.to_string();
+    }
+    let secret = match input
+        .secret_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => s.to_string(),
+        None => state
+            .get_setting(eng::KEY_SECRET_KEY)
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty())
+            .ok_or("SecretKey 未填写且无已保存值")?,
+    };
+    S3Client::new(RemoteConfig {
+        endpoint,
+        region: input.region.trim().to_string(),
+        bucket: bucket.to_string(),
+        access_key: input.access_key.trim().to_string(),
+        secret_key: secret,
+        addressing: match input.addressing.as_deref() {
+            Some("path") => "path".to_string(),
+            _ => "virtual".to_string(),
+        },
+        timeout_secs: input.timeout_secs.unwrap_or(30).clamp(5, 600),
+        tls_verify: input.tls_verify.unwrap_or(true),
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// endpoint 规范化：去协议前缀与尾部斜杠。
+fn normalized_endpoint_of(input: &SyncConfigInput) -> String {
+    input
         .endpoint
         .trim()
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .trim_end_matches('/')
-        .to_string();
+        .to_string()
+}
+
+/// 保存远端配置。endpoint 若填了完整桶域名（含桶名），去掉冗余前缀后存储。
+/// 首次保存生成 device_id；密钥策略：
+/// - 本机已有密钥 → 保持不变；
+/// - 本机没有且远端为空 → 生成新钥（首个设备；返回一次供抄录）；
+/// - 本机没有但远端已有同步数据 → **不生成**（自动生成会导致各设备密钥
+///   不一致、互相解不开对方备份甚至分叉覆盖远端数据），置
+///   `needs_key_import` 要求用户从旧设备导入密钥后才能启用同步。
+/// 探测失败（网络/凭证错）时整个保存报错——盲存无法确认远端状态，
+/// 正是危险路径；请先「测试连接」排除问题后重试。
+#[tauri::command]
+async fn sync_configure(
+    input: SyncConfigInput,
+    state: State<'_, SqliteStorage>,
+) -> Result<SyncConfigInfo, String> {
+    use mosh_core::sync::engine as eng;
+    let mut endpoint = normalized_endpoint_of(&input);
     if endpoint.is_empty() {
         return Err("endpoint 不能为空".into());
     }
@@ -1379,13 +1439,41 @@ fn sync_configure(
         return Err("access_key 不能为空".into());
     }
     // 用户把控制台的完整桶域名填进 endpoint：去掉 `<bucket>.` 前缀。
-    if let Some(rest) = endpoint.strip_prefix(&format!("{bucket}.")) {
+    if let Some(rest) = endpoint.strip_prefix(&format!("{}.", bucket)) {
         endpoint = rest.to_string();
     }
+    // 寻址风格校验（其余高级项缺省 = 默认值）。
+    let addressing = match input.addressing.as_deref() {
+        None | Some("") => "virtual",
+        Some("virtual") | Some("path") => input.addressing.as_deref().unwrap(),
+        Some(other) => return Err(format!("寻址风格仅支持 virtual / path，收到 {other}")),
+    };
     let secret = input
         .secret_key
-        .and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+        .as_ref()
+        .and_then(|s| if s.trim().is_empty() { None } else { Some(s.clone()) });
+
+    // —— 保存前探测：本机无密钥时必须先弄清远端是否已有同步数据 ——
+    let local_key = state
+        .get_setting(eng::KEY_SYNC_KEY)
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty());
+    let mut needs_key_import = false;
     let mut generated_key = None;
+    if local_key.is_none() {
+        let client = s3_client_from_input(&input, &state)?;
+        let objects = client.list(eng::KEY_PREFIX).await.map_err(|e| {
+            format!("无法确认远端存储状态（{e}）——为避免密钥不一致，本次未保存；请先「测试连接」排除问题后重试")
+        })?;
+        if objects.is_empty() {
+            // 远端为空：本机是首个设备，生成新钥（返回一次供抄录）。
+            let export =
+                mosh_core::sync::crypto::encode_key(&mosh_core::sync::crypto::generate_key());
+            generated_key = Some(export);
+        } else {
+            needs_key_import = true;
+        }
+    }
 
     state
         .set_setting(eng::KEY_ENDPOINT, &endpoint)
@@ -1399,12 +1487,6 @@ fn sync_configure(
     state
         .set_setting(eng::KEY_ACCESS_KEY, input.access_key.trim())
         .map_err(|e| e.to_string())?;
-    // 寻址风格 / 超时 / TLS 校验：缺省 = 默认值（virtual / 30s / 校验开）。
-    let addressing = match input.addressing.as_deref() {
-        None | Some("") => "virtual",
-        Some("virtual") | Some("path") => input.addressing.as_deref().unwrap(),
-        Some(other) => return Err(format!("寻址风格仅支持 virtual / path，收到 {other}")),
-    };
     state
         .set_setting(eng::KEY_ADDRESSING, addressing)
         .map_err(|e| e.to_string())?;
@@ -1437,18 +1519,18 @@ fn sync_configure(
             .set_setting(eng::KEY_DEVICE_ID, &mosh_core::model::new_id())
             .map_err(|e| e.to_string())?;
     }
-    if state
-        .get_setting(eng::KEY_SYNC_KEY)
-        .ok()
-        .flatten()
-        .is_none()
-    {
-        let export = mosh_core::sync::crypto::encode_key(&mosh_core::sync::crypto::generate_key());
+    if let Some(ref export) = generated_key {
         state
-            .set_setting(eng::KEY_SYNC_KEY, &export)
+            .set_setting(eng::KEY_SYNC_KEY, export)
             .map_err(|e| e.to_string())?;
-        generated_key = Some(export);
     }
+    // 导入需求标记随本次保存刷新（已有密钥 = 无需导入）。
+    state
+        .set_setting(
+            eng::KEY_NEEDS_KEY_IMPORT,
+            if needs_key_import { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
     let mut info = sync_config_info(&state);
     info.generated_key = generated_key;
     Ok(info)
@@ -1461,51 +1543,12 @@ async fn sync_test_connection(
     input: SyncConfigInput,
     state: State<'_, SqliteStorage>,
 ) -> Result<usize, String> {
-    use mosh_core::sync::engine as eng;
-    let mut endpoint = input
-        .endpoint
-        .trim()
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_end_matches('/')
-        .to_string();
-    let bucket = input.bucket.trim();
-    if endpoint.is_empty() || bucket.is_empty() {
+    if input.endpoint.trim().is_empty() || input.bucket.trim().is_empty() {
         return Err("请先填写 endpoint 与 bucket".into());
     }
-    if let Some(rest) = endpoint.strip_prefix(&format!("{bucket}.")) {
-        endpoint = rest.to_string();
-    }
-    let secret = match input
-        .secret_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(s) => s.to_string(),
-        // 表单留空：回退已保存的 secret（编辑已有配置时）。后端也取不到 → 报错。
-        None => state
-            .get_setting(eng::KEY_SECRET_KEY)
-            .map_err(|e| e.to_string())?
-            .filter(|s| !s.is_empty())
-            .ok_or("SecretKey 未填写且无已保存值")?,
-    };
-    let client = S3Client::new(RemoteConfig {
-        endpoint,
-        region: input.region.trim().to_string(),
-        bucket: bucket.to_string(),
-        access_key: input.access_key.trim().to_string(),
-        secret_key: secret,
-        addressing: match input.addressing.as_deref() {
-            Some("path") => "path".to_string(),
-            _ => "virtual".to_string(),
-        },
-        timeout_secs: input.timeout_secs.unwrap_or(30),
-        tls_verify: input.tls_verify.unwrap_or(true),
-    })
-    .map_err(|e| e.to_string())?;
+    let client = s3_client_from_input(&input, &state)?;
     let objects = client
-        .list(eng::KEY_PREFIX)
+        .list(mosh_core::sync::engine::KEY_PREFIX)
         .await
         .map_err(|e| e.to_string())?;
     Ok(objects.len())
@@ -1520,12 +1563,41 @@ fn sync_export_key(state: State<'_, SqliteStorage>) -> Result<String, String> {
         .ok_or_else(|| "尚未生成密钥，先保存同步配置".to_string())
 }
 
-/// 导入加密密钥（新设备粘贴）。密钥不匹配的远端 dump 会被跳过。
+/// 导入加密密钥（新设备粘贴）。除格式校验外，远端已有数据时尝试解密一份
+/// 备份验证匹配——密钥不匹配的远端 dump 会被静默跳过，若不拦截会直接
+/// 造成分叉（各推各的、互相看不见），故不匹配时拒绝导入。
+/// 远端为空（首个设备换机重设）或探测不可达（离线导入）时不拦截。
 #[tauri::command]
-fn sync_import_key(key: String, state: State<'_, SqliteStorage>) -> Result<(), String> {
-    mosh_core::sync::crypto::decode_key(&key).map_err(|e| e.to_string())?; // 先校验
+async fn sync_import_key(key: String, state: State<'_, SqliteStorage>) -> Result<(), String> {
+    use mosh_core::sync::engine as eng;
+    let key = key.trim().to_string();
+    let decoded = mosh_core::sync::crypto::decode_key(&key).map_err(|e| e.to_string())?; // 先校验格式
+    if let Ok(client) = sync_remote_of(&state) {
+        if let Ok(objects) = client.list(eng::KEY_PREFIX).await {
+            for obj in &objects {
+                if !obj.key.ends_with("/dump.bin") {
+                    continue;
+                }
+                match client.get(&obj.key).await {
+                    Ok(Some(bytes)) => {
+                        if mosh_core::sync::crypto::open(&bytes, &decoded).is_err() {
+                            return Err(
+                                "导入的密钥无法解密远端已有备份——请确认它复制自同一同步组的设备".into(),
+                            );
+                        }
+                        break; // 一份能解即可
+                    }
+                    _ => continue, // 取不到（404 等）：试下一份
+                }
+            }
+        }
+    }
     state
-        .set_setting(mosh_core::sync::engine::KEY_SYNC_KEY, key.trim())
+        .set_setting(eng::KEY_SYNC_KEY, &key)
+        .map_err(|e| e.to_string())?;
+    // 导入成功即解除「待导入」状态。
+    state
+        .set_setting(eng::KEY_NEEDS_KEY_IMPORT, "false")
         .map_err(|e| e.to_string())
 }
 
@@ -1540,16 +1612,24 @@ fn sync_set_enabled(enabled: bool, state: State<'_, SqliteStorage>) -> Result<()
         .map_err(|e| e.to_string())
 }
 
-/// 手动立即同步（设置页「立即同步」）。
+/// 手动立即同步（设置页「立即同步」/ 标题栏按钮）。与后台 run_sync 一致地
+/// 广播 syncing → idle 两阶段，且 applied/messages_applied 取自本次真实
+/// 统计——此前沿用上次残留值，会让前端误判「有落地变更」而频繁无谓刷新。
 #[tauri::command]
 async fn sync_now(app: tauri::AppHandle) -> Result<mosh_core::sync::SyncOutcome, String> {
     let Some(state) = app.try_state::<SqliteStorage>() else {
         return Err("存储不可用".into());
     };
     if !mosh_core::sync::is_ready(&state) {
-        return Err("同步未就绪：请先完成配置并启用".into());
+        return Err("同步未就绪：请先完成配置（含导入密钥）并启用".into());
     }
     let _guard = SYNC_LOCK.lock().await;
+    let mut ui = sync_ui_of(&app);
+    ui.phase = "syncing".into();
+    ui.error = None;
+    ui.applied = 0;
+    ui.messages_applied = 0;
+    set_sync_ui(&app, ui);
     let client = sync_remote_of(&state)?;
     let outcome = mosh_core::sync::full_sync(&state, &client)
         .await
@@ -1558,6 +1638,8 @@ async fn sync_now(app: tauri::AppHandle) -> Result<mosh_core::sync::SyncOutcome,
     ui.phase = "idle".into();
     ui.last_success_at = mosh_core::model::now_iso().into();
     ui.error = None;
+    ui.applied = (outcome.stats.records_applied + outcome.stats.settings_applied) as u32;
+    ui.messages_applied = outcome.stats.messages_applied as u32;
     set_sync_ui(&app, ui);
     Ok(outcome)
 }

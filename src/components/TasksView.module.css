@@ -2,7 +2,7 @@
 
 .page {
   height: 100%;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 24px 40px 16px;
   display: flex;
   flex-direction: column;
@@ -107,16 +107,86 @@
   filter: brightness(1.08);
 }
 
-/* —— 主体 —— */
+/* —— 日期过滤工具条 —— */
+.date-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.date-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-soft);
+}
+.date-chip {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  padding: 4px 11px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.date-chip:hover {
+  color: var(--text);
+}
+.date-chip.active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 18%);
+}
+.date-clear {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.date-clear:hover {
+  background: var(--border-soft);
+  color: var(--text);
+}
+
+/* —— 主体：独立滚动容器（头部与工具条固定，事项再多也可翻看） ——
+   滚动条常驻可见可拖动（覆盖全局“仅滚动中显示”规则）：待办多时
+   （含展开的子任务行）需要能直接拖滑块翻看，不能只靠滚轮。 */
 .body {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  min-height: 0;
+  padding-bottom: 12px;
+  /* 滑块用 text-muted（border 色在浅色背景上几乎不可见）；
+     WebView2(Chromium≥121) 下标准属性优先于 ::webkit-* 伪元素。 */
+  scrollbar-color: var(--text-muted) transparent;
+}
+.body::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
 }
 
+/* —— 分组卡片 ——
+   flex: none 至关重要：卡片带 overflow:hidden（裁圆角），而 flex 子项在
+   overflow 非 visible 时自动最小高度为 0——不禁止收缩的话，卡片会被压扁
+   裁切内容而不是撑出 .body 的滚动（“条目超出页面但没有滚动条”的根因）。 */
 .group {
+  flex: none;
   border: 1px solid var(--border-soft);
   border-radius: 14px;
   background: var(--surface);
@@ -137,6 +207,9 @@
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
+}
+.group-dot.done {
+  background: var(--text-dim);
 }
 .group.overdue .group-dot {
   background: var(--pri-high);
@@ -180,8 +253,9 @@
   padding: 2px 10px 6px;
 }
 
-/* 空态 */
+/* 空态（同为 .body 的 flex 子项，禁止收缩防裁切） */
 .empty {
+  flex: none;
   border: 1px dashed var(--border);
   border-radius: 14px;
   padding: 3rem 1.5rem;
