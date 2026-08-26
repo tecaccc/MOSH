@@ -4,9 +4,10 @@ import {
   eventOnDay,
   isSameDay,
   layoutTimedDay,
-  todayOnly,
+  parseDateOnly,
   weekdayLabelsMonFirst,
 } from "../../lib/calendar-grid";
+import { useToday } from "../../lib/use-today";
 import { formatTime } from "../../lib/datetime";
 import type { RecordData as RecordData } from "../../lib/types";
 import styles from "./TimeGrid.module.css";
@@ -19,7 +20,6 @@ import styles from "./TimeGrid.module.css";
 
 const HOUR_H = 44;
 const hours = Array.from({ length: 24 }, (_, h) => h);
-const today = todayOnly();
 const weekdayLabels = weekdayLabelsMonFirst();
 
 interface BlockStyleInput {
@@ -42,6 +42,8 @@ export default function TimeGrid({ days }: { days: string[] }) {
   const openDay = useCalendarStore((s) => s.openDay);
   const startCreateEvent = useCalendarStore((s) => s.startCreateEvent);
   const startEditEvent = useCalendarStore((s) => s.startEditEvent);
+  // 响应式今日：跨午夜后日头部高亮跟随。
+  const today = useToday();
 
   const gridTemplate = { gridTemplateColumns: `48px repeat(${days.length}, 1fr)` };
   const axisHeight = { height: HOUR_H * 24 };
@@ -62,7 +64,7 @@ export default function TimeGrid({ days }: { days: string[] }) {
             className={`${styles.dayhead}${isSameDay(day, today) ? ` ${styles.today}` : ""}`}
             onClick={() => openDay(day)}
           >
-            <span className={styles.dow}>{weekdayLabels[(new Date(day).getDay() + 6) % 7]}</span>
+            <span className={styles.dow}>{weekdayLabels[(parseDateOnly(day).getDay() + 6) % 7]}</span>
             <span className={styles.dnum}>{Number(day.slice(8, 10))}</span>
           </button>
         ))}

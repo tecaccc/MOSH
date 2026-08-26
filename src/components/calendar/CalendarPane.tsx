@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useCalendarStore, type CalMode } from "../../state/calendar";
 import { useAppStore } from "../../state/store";
-import { addDays, mondayOfWeek, monthLabel } from "../../lib/calendar-grid";
+import { addDays, mondayOfWeek, monthLabel, parseDateOnly } from "../../lib/calendar-grid";
 import { formatDate } from "../../lib/datetime";
+import { useToday } from "../../lib/use-today";
 import AgendaView from "./AgendaView";
 import DayView from "./DayView";
 import MonthView from "./MonthView";
@@ -29,6 +30,17 @@ export default function CalendarPane() {
   // AI 工具等外部变更后自增，触发重载当前区间。
   const dataVersion = useAppStore((s) => s.dataVersion);
 
+  // 响应式「今天」：跨午夜后跟随（光标仍停在旧今天/启动日时自动跳到新今天）。
+  const today = useToday();
+  const prevToday = useRef(today);
+  useEffect(() => {
+    const prev = prevToday.current;
+    prevToday.current = today;
+    const { cursor, initDay } = useCalendarStore.getState();
+    // 用户已翻页离开（光标既非旧今天也非启动日）则不打扰；否则定位到新今天。
+    if (cursor !== today && (cursor === prev || cursor === initDay)) goToday();
+  }, [today, goToday]);
+
   // 首挂载 + mode/cursor 变化 + 外部数据变更时刷新区间。
   useEffect(() => {
     void loadRange();
@@ -43,7 +55,8 @@ export default function CalendarPane() {
         return `${formatDate(s)} – ${formatDate(addDays(s, 6))}`;
       }
       case "day": {
-        const dow = ["日", "一", "二", "三", "四", "五", "六"][new Date(cursor).getDay()];
+        // date-only 需本地构造取星期（字符串直解按 UTC，负时区会错位到前一天）。
+        const dow = ["日", "一", "二", "三", "四", "五", "六"][parseDateOnly(cursor).getDay()];
         return `${formatDate(cursor)} 周${dow}`;
       }
       case "agenda":

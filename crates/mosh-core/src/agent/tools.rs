@@ -125,6 +125,23 @@ pub fn registry() -> Vec<ToolDef> {
             requires_confirm: false,
         },
         ToolDef {
+            name: "update_todo",
+            description: "修改一条已存在的待办（只需传要改的字段；id 来自 list_todos 或创建结果）。description/due_at 传 null 可清除。",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "待办 id（必填，来自 list_todos 或创建结果）"},
+                    "title": {"type": "string", "description": "新标题"},
+                    "description": {"type": "string", "description": "新描述；传 null 清除"},
+                    "due_at": {"type": "string", "description": "新截止时间：ISO8601 或 date-only；传 null 清除截止"},
+                    "priority": {"type": "string", "enum": ["none", "low", "medium", "high"], "description": "新优先级"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "新标签列表（整体替换）"}
+                },
+                "required": ["id"]
+            }),
+            requires_confirm: false,
+        },
+        ToolDef {
             name: "delete_event",
             description: "删除一条日程事件（软删，数据保留于库可恢复）。id 必须来自 list_events 或创建结果；删除前应先查询确认目标。",
             parameters: json!({
@@ -221,6 +238,7 @@ pub fn dispatch(db: &SqliteStorage, name: &str, args: &Value) -> Result<Value, C
         "create_todo" => create_todo(db, args)?,
         "create_event" => create_event(db, args)?,
         "update_event" => update_event(db, args)?,
+        "update_todo" => update_todo(db, args)?,
         "delete_event" => delete_event(db, args)?,
         "delete_events" => delete_events(db, args)?,
         "list_todos" => list_todos(db, args)?,
@@ -331,6 +349,42 @@ fn update_event(db: &SqliteStorage, args: &Value) -> Result<Value, CoreError> {
         "all_day": crate::model::is_all_day(&rec),
         "recurrence": crate::model::recurrence_of(&rec),
         "reminder_minutes": crate::model::reminder_minutes_of(&rec)
+    }))
+}
+
+fn update_todo(db: &SqliteStorage, args: &Value) -> Result<Value, CoreError> {
+    let id = arg_str(args, "id").ok_or_else(|| CoreError::Validation("id is required".into()))?;
+    let mut patch = crate::model::RecordPatch::default();
+    if let Some(t) = arg_str(args, "title") {
+        patch.title = Some(t);
+    }
+    // description / due_at：传值→设置；显式 null→清除；缺省→不改。
+    // （arg_str 会丢弃空串，故空串同缺省——模型想清除应传 null。）
+    if let Some(d) = arg_str(args, "description") {
+        patch.description = Some(Some(d));
+    } else if args.get("description").map(Value::is_null).unwrap_or(false) {
+        patch.description = Some(None);
+    }
+    if let Some(e) = arg_str(args, "due_at") {
+        patch.end_at = Some(Some(e));
+    } else if args.get("due_at").map(Value::is_null).unwrap_or(false) {
+        patch.end_at = Some(None);
+    }
+    if let Some(p) = args.get("priority").filter(|v| !v.is_null()) {
+        let priority: Priority = serde_json::from_value(p.clone())
+            .map_err(|_| CoreError::Validation("invalid priority".into()))?;
+        patch.priority = Some(priority);
+    }
+    if let Some(t) = args.get("tags").filter(|v| !v.is_null()) {
+        let tags: Vec<String> = serde_json::from_value(t.clone())
+            .map_err(|_| CoreError::Validation("tags must be a string array".into()))?;
+        patch.tags = Some(tags);
+    }
+    let rec = service::update_todo(db, &id, patch)?;
+    Ok(json!({
+        "ok": true, "kind": "todo", "id": rec.id, "title": rec.title,
+        "due_at": rec.end_at, "status": rec.status,
+        "priority": crate::model::priority_of(&rec)
     }))
 }
 
@@ -532,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn specs_cover_nine_tools() {
+    fn specs_cover_ten_tools() {
         let names: Vec<String> = specs().into_iter().map(|s| s.name).collect();
         assert_eq!(
             names,
@@ -540,6 +594,7 @@ mod tests {
                 "create_todo",
                 "create_event",
                 "update_event",
+                "update_todo",
                 "delete_event",
                 "delete_events",
                 "list_todos",
@@ -548,6 +603,61 @@ mod tests {
                 "add_subtask"
             ]
         );
+    }
+
+    #[test]
+    fn dispatch_update_todo_changes_fields() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let r = dispatch(
+            &db,
+            "create_todo",
+            &json!({"title": "旧标题", "due_at": "2026-08-21", "priority": "low", "tags": ["work"]}),
+        )
+        .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+
+        // 改标题/截止/优先级/标签，补描述。
+        let u = dispatch(
+            &db,
+            "update_todo",
+            &json!({"id": id, "title": "新标题", "due_at": "2026-08-25T17:00:00",
+                     "priority": "high", "tags": ["urgent"], "description": "备注"}),
+        )
+        .unwrap();
+        assert_eq!(u["ok"], true);
+        assert_eq!(u["title"], "新标题");
+        assert_eq!(u["priority"], "high");
+        assert_eq!(u["due_at"], "2026-08-25T17:00:00");
+
+        let listed = dispatch(&db, "list_todos", &json!({})).unwrap();
+        assert_eq!(listed["todos"][0]["title"], "新标题");
+        assert_eq!(listed["todos"][0]["priority"], "high");
+
+        // 显式 null 清除截止；未传的字段不动。
+        let u = dispatch(&db, "update_todo", &json!({"id": id, "due_at": null})).unwrap();
+        assert_eq!(u["ok"], true);
+        assert!(u["due_at"].is_null());
+        assert_eq!(u["title"], "新标题");
+    }
+
+    #[test]
+    fn dispatch_update_todo_rejects_non_todo_and_ghost() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let ev = dispatch(
+            &db,
+            "create_event",
+            &json!({"title": "会议", "start_at": "2026-08-16T10:00:00Z", "end_at": "2026-08-16T11:00:00Z"}),
+        )
+        .unwrap();
+        let eid = ev["id"].as_str().unwrap().to_string();
+        // 日程 id → 拒绝（不是待办）。
+        assert!(dispatch(&db, "update_todo", &json!({"id": eid, "title": "x"})).is_err());
+
+        // 幽灵 id → NotFound。
+        assert!(matches!(
+            dispatch(&db, "update_todo", &json!({"id": "ghost", "title": "x"})).unwrap_err(),
+            CoreError::NotFound(_)
+        ));
     }
 
     #[test]

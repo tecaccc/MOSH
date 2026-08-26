@@ -223,10 +223,7 @@ mod tests {
         let d = NotifySettings::default();
         assert!(d.system && !d.email_enabled && d.email.is_none());
         // 旧版无设置 → 反序列化失败回退 default（由调用方 unwrap_or_default 兜底）。
-        assert_eq!(
-            serde_json::from_str::<NotifySettings>("not json").is_err(),
-            true
-        );
+        assert!(serde_json::from_str::<NotifySettings>("not json").is_err());
     }
 
     #[test]

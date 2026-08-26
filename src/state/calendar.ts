@@ -35,6 +35,11 @@ interface CalendarState {
   mode: CalMode;
   /** 当前聚焦日期 date-only。 */
   cursor: string;
+  /**
+  * 应用启动时的「今天」（date-only）。托盘常驻跨午夜后，CalendarPane 据此判断
+  * 光标是否仍停在启动日（即未被用户翻页）→ 自动跟随到新「今天」。
+  */
+  initDay: string;
   /** null=新建、undefined=编辑器关闭、id=编辑中。 */
   editingId: string | null | undefined;
 
@@ -74,6 +79,7 @@ export const useCalendarStore = create<CalendarState>()((set, get) => ({
   renderEvents: [],
   mode: "month",
   cursor: todayOnly(),
+  initDay: todayOnly(),
   editingId: undefined,
 
   loadRange: async () => {

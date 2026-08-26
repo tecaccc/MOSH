@@ -150,6 +150,22 @@ pub fn update_event(db: &SqliteStorage, id: &str, patch: RecordPatch) -> Result<
     Ok(record)
 }
 
+/// 部分更新待办（仅 `kind = todo`）：合并后标题不得为空（与创建同约束）。
+pub fn update_todo(db: &SqliteStorage, id: &str, patch: RecordPatch) -> Result<Record, CoreError> {
+    let mut record = db.get(id)?;
+    if record.kind != Kind::Todo {
+        return Err(CoreError::Validation(format!("{id} is not a todo")));
+    }
+    apply_patch(&mut record, patch);
+    if record.title.trim().is_empty() {
+        return Err(CoreError::Validation("title is required".to_string()));
+    }
+    record.updated_at = now_iso();
+    record.revision += 1;
+    db.update(&record)?;
+    Ok(record)
+}
+
 /// 校验 event 的起止时间范围：全天 `end >= start`；定时 `end > start`（ISO8601）。
 fn validate_event_range(record: &Record) -> Result<(), CoreError> {
     let (Some(start), Some(end)) = (record.start_at.as_deref(), record.end_at.as_deref()) else {
@@ -659,5 +675,60 @@ mod tests {
         )
         .unwrap();
         assert!(!crate::model::is_all_day(&updated));
+    }
+
+    #[test]
+    fn update_todo_changes_fields_and_validates() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let rec = create_todo(
+            &db,
+            TodoInput {
+                due_at: Some("2026-08-21".into()),
+                priority: Priority::Low,
+                ..input("旧标题")
+            },
+        )
+        .unwrap();
+
+        // 改标题/优先级，清除截止。
+        let updated = update_todo(
+            &db,
+            &rec.id,
+            RecordPatch {
+                title: Some("新标题".into()),
+                end_at: Some(None),
+                priority: Some(Priority::High),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.title, "新标题");
+        assert_eq!(updated.end_at, None);
+        assert_eq!(crate::model::priority_of(&updated), Priority::High);
+        assert!(updated.revision > rec.revision);
+
+        // 空标题 → 拒绝。
+        assert!(matches!(
+            update_todo(
+                &db,
+                &rec.id,
+                RecordPatch {
+                    title: Some("   ".into()),
+                    ..Default::default()
+                }
+            ),
+            Err(CoreError::Validation(_))
+        ));
+
+        // 日程 id → 拒绝。
+        let ev = create_event(
+            &db,
+            event_input("会议", "2026-08-15T09:00:00Z", "2026-08-15T10:00:00Z"),
+        )
+        .unwrap();
+        assert!(matches!(
+            update_todo(&db, &ev.id, RecordPatch::default()),
+            Err(CoreError::Validation(_))
+        ));
     }
 }

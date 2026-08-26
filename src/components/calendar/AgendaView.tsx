@@ -4,9 +4,10 @@ import {
   addDays,
   eventOnDay,
   isSameDay,
-  todayOnly,
+  parseDateOnly,
   weekdayLabelsMonFirst,
 } from "../../lib/calendar-grid";
+import { useToday } from "../../lib/use-today";
 import { formatDate, formatTime } from "../../lib/datetime";
 import type { RecordData as RecordT } from "../../lib/types";
 import styles from "./AgendaView.module.css";
@@ -16,7 +17,6 @@ import styles from "./AgendaView.module.css";
  * 全天事件归其 start 日（多日全天只显示一次，附 `→ end`）；定时按触及日。
  */
 
-const today = todayOnly();
 const weekdayLabels = weekdayLabelsMonFirst();
 
 interface DayGroup {
@@ -28,6 +28,8 @@ export default function AgendaView() {
   const cursor = useCalendarStore((s) => s.cursor);
   const renderEvents = useCalendarStore((s) => s.renderEvents);
   const startEditEvent = useCalendarStore((s) => s.startEditEvent);
+  // 响应式今日：跨午夜后分组头「今天」标记跟随。
+  const today = useToday();
 
   const groups = useMemo<DayGroup[]>(() => {
     const days = Array.from({ length: 30 }, (_, i) => addDays(cursor, i));
@@ -45,7 +47,7 @@ export default function AgendaView() {
       .filter((g) => g.items.length > 0);
   }, [cursor, renderEvents]);
 
-  const dowOf = (day: string) => weekdayLabels[(new Date(day).getDay() + 6) % 7];
+  const dowOf = (day: string) => weekdayLabels[(parseDateOnly(day).getDay() + 6) % 7];
 
   return (
     <div className={styles.agenda}>

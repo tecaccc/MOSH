@@ -7,9 +7,9 @@ import {
   isSameMonth,
   monthGridStart,
   orderedForDay,
-  todayOnly,
   weekdayLabelsMonFirst,
 } from "../../lib/calendar-grid";
+import { useToday } from "../../lib/use-today";
 import { formatTime } from "../../lib/datetime";
 import type { RecordData as RecordT } from "../../lib/types";
 import styles from "./MonthView.module.css";
@@ -17,13 +17,14 @@ import styles from "./MonthView.module.css";
 /** 月视图：6×7 网格（周一首）。点格空白 → 当日新建；点事件 → 编辑。 */
 
 const labels = weekdayLabelsMonFirst();
-const today = todayOnly();
 
 export default function MonthView() {
   const cursor = useCalendarStore((s) => s.cursor);
   const renderEvents = useCalendarStore((s) => s.renderEvents);
   const startCreateEvent = useCalendarStore((s) => s.startCreateEvent);
   const startEditEvent = useCalendarStore((s) => s.startEditEvent);
+  // 响应式今日：托盘常驻跨午夜后高亮跟随到新「今天」。
+  const today = useToday();
 
   const days = useMemo(() => {
     const start = monthGridStart(cursor);

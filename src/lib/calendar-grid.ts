@@ -206,8 +206,8 @@ function shiftDate(d: Date, rec: Recurrence, n: number): Date {
   }
 }
 
-/** date-only → 本地 Date（无时区）。 */
-function parseDateOnly(s: string): Date {
+/** date-only → 本地 Date（无时区；`new Date("YYYY-MM-DD")` 按 UTC 解析会时区错位，勿用）。 */
+export function parseDateOnly(s: string): Date {
   const y = Number(s.slice(0, 4));
   const m = Number(s.slice(5, 7));
   const d = Number(s.slice(8, 10));

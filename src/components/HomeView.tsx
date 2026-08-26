@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addDays, eventOnDay, mondayOfWeek, todayOnly } from "../lib/calendar-grid";
+import { addDays, eventOnDay, mondayOfWeek } from "../lib/calendar-grid";
+import { useToday } from "../lib/use-today";
 import { formatDate, formatTime, toDateOnly } from "../lib/datetime";
 import { lunarDay, lunarFull, lunarYearMonth } from "../lib/lunar";
 import { useAppStore } from "../state/store";
@@ -17,9 +18,6 @@ import styles from "./HomeView.module.css";
  * 月历 mini-grid（每日农历、高亮今日、点日钻取）。
  */
 
-const now = new Date();
-const today = todayOnly();
-const tomorrow = addDays(today, 1);
 /** 「日程安排」卡片的加载与展示窗口：今天起 N 天（对齐议程视图惯例）。 */
 const SCHEDULE_DAYS = 30;
 const pad = (n: number): string => String(n).padStart(2, "0");
@@ -38,18 +36,15 @@ const PRIO_DOT: Record<Priority, string> = {
   high: styles.pHigh,
 };
 
-const greeting = (() => {
-  const h = now.getHours();
+/** 时段问候（按小时）。 */
+function greetingOf(d: Date): string {
+  const h = d.getHours();
   if (h < 6) return "夜深了";
   if (h < 11) return "早上好";
   if (h < 13) return "中午好";
   if (h < 18) return "下午好";
   return "晚上好";
-})();
-const bigDate = `${now.getMonth() + 1}月${now.getDate()}日`;
-const dayLine = `星期${DOW[now.getDay()]} · ${now.getFullYear()}`;
-const footerDate = `今日 · ${now.getMonth() + 1}月${now.getDate()}日 周${DOW[now.getDay()]}`;
-const footerLunar = lunarFull(today);
+}
 const weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"];
 const CAL_COLORS = ["var(--cal-1)", "var(--cal-2)", "var(--cal-3)", "var(--cal-4)"];
 
@@ -68,7 +63,7 @@ function weekdayOf(day: string): string {
 }
 
 /** 分组头：今天 / 明天 / M月D日。 */
-function dayLabel(day: string): string {
+function dayLabel(day: string, today: string, tomorrow: string): string {
   if (day === today) return "今天";
   if (day === tomorrow) return "明天";
   return formatDate(day);
@@ -80,7 +75,7 @@ function dueLabelOf(r: RecordT): string {
 }
 
 /** 待办是否逾期（按本地日期比较；当天截止不算逾期）。 */
-function isOverdue(r: RecordT): boolean {
+function isOverdue(r: RecordT, today: string): boolean {
   const day = toDateOnly(r.end_at);
   return day !== "" && day < today;
 }
@@ -128,12 +123,23 @@ export default function HomeView() {
   }, []);
   const clock = `${pad(clockNow.getHours())}:${pad(clockNow.getMinutes())}`;
 
+  // 响应式「今天」+ 分钟级时钟：托盘常驻跨午夜后，日期文案/问候/今日过滤/逾期
+  // 判定全部跟随滚动（模块顶层固化 now/today 是「定位到昨天」BUG 的根因）。
+  const today = useToday();
+  const tomorrow = addDays(today, 1);
+  const now = clockNow;
+  const greeting = greetingOf(now);
+  const bigDate = `${now.getMonth() + 1}月${now.getDate()}日`;
+  const dayLine = `星期${DOW[now.getDay()]} · ${now.getFullYear()}`;
+  const footerDate = `今日 · ${now.getMonth() + 1}月${now.getDate()}日 周${DOW[now.getDay()]}`;
+  const footerLunar = lunarFull(today);
+
   const dueToday = useMemo(
     () =>
       records.filter(
         (r) => r.status === "active" && r.end_at !== null && isSameDay(new Date(r.end_at), now),
       ),
-    [records],
+    [records, now],
   );
   const overdue = useMemo(
     () =>
@@ -142,17 +148,17 @@ export default function HomeView() {
         const d = new Date(r.end_at);
         return !Number.isNaN(d.getTime()) && d.getTime() < now.getTime() && !isSameDay(d, now);
       }),
-    [records],
+    [records, now],
   );
 
   useEffect(() => {
     void loadWeather();
   }, [loadWeather]);
 
-  // 事件窗口：挂载 + 外部数据变更（AI 工具等，dataVersion）时重载。
+  // 事件窗口：挂载 + 外部数据变更（AI 工具等，dataVersion）+ 跨天时重载。
   useEffect(() => {
     void loadEvents(today, addDays(today, SCHEDULE_DAYS)).catch(() => {});
-  }, [loadEvents, dataVersion]);
+  }, [loadEvents, dataVersion, today]);
 
   // 事件编辑器关闭后刷新日程窗口（编辑可能换走了 mode/cursor 窗口）。
   const editing = editingEventOf(renderEvents, editingId) !== undefined;
@@ -162,7 +168,7 @@ export default function HomeView() {
       void loadEvents(today, addDays(today, SCHEDULE_DAYS)).catch(() => {});
     }
     wasEditing.current = editing;
-  }, [editing, loadEvents]);
+  }, [editing, loadEvents, today]);
 
   // —— 日程安排：窗口内全部事件（升序）+ 今日子集（统计卡）——
   const allEvents = useMemo(
@@ -172,7 +178,7 @@ export default function HomeView() {
         .sort((a: RecordT, b: RecordT) => (a.start_at ?? "").localeCompare(b.start_at ?? "")),
     [renderEvents],
   );
-  const todayEvents = useMemo(() => allEvents.filter((e) => eventOnDay(e, today)), [allEvents]);
+  const todayEvents = useMemo(() => allEvents.filter((e) => eventOnDay(e, today)), [allEvents, today]);
   const nextEvent = todayEvents.find((e) => {
     if (e.data.all_day === true) return false;
     const s = new Date(e.start_at ?? "");
@@ -193,7 +199,7 @@ export default function HomeView() {
         return { day, items };
       })
       .filter((g) => g.items.length > 0);
-  }, [allEvents]);
+  }, [allEvents, today]);
   const scheduleCount = scheduleGroups.reduce((n, g) => n + g.items.length, 0);
 
   // —— 待办事项卡：进行中的顶层待办，按截止/优先级排序（逾期自然置顶）——
@@ -220,7 +226,7 @@ export default function HomeView() {
   }
 
   // —— 月历 mini-grid（本地月份状态，独立于日历视图翻页）——
-  const [calYm, setCalYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
+  const [calYm, setCalYm] = useState({ y: clockNow.getFullYear(), m: clockNow.getMonth() });
   const monthTitle = `${calYm.y}年 ${calYm.m + 1}月`;
   const monthLunarSub = lunarYearMonth(`${calYm.y}-${pad(calYm.m + 1)}-15`);
   const cells = useMemo(() => {
@@ -425,7 +431,7 @@ export default function HomeView() {
               {scheduleGroups.map((g) => (
                 <div key={g.day} className={styles["day-group"]}>
                   <div className={`${styles["day-head"]}${g.day === today ? ` ${styles.isToday}` : ""}`}>
-                    <span className={styles["day-main"]}>{dayLabel(g.day)}</span>
+                    <span className={styles["day-main"]}>{dayLabel(g.day, today, tomorrow)}</span>
                     <span className={styles["day-sub"]}>{weekdayOf(g.day)}</span>
                   </div>
                   <ul className={styles["ev-list"]}>
@@ -489,7 +495,7 @@ export default function HomeView() {
               <ul className={styles["todo-list"]}>
                 {activeTodos.map((t) => {
                   const due = dueLabelOf(t);
-                  const overdue = isOverdue(t);
+                  const overdue = isOverdue(t, today);
                   const prio = t.data.priority ?? "none";
                   return (
                     <li key={t.id}>

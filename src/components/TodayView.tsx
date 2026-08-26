@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { addDays, todayOnly } from "../lib/calendar-grid";
+import { addDays } from "../lib/calendar-grid";
+import { useToday } from "../lib/use-today";
 import { formatCompletedAt, formatTime } from "../lib/datetime";
 import { useAppStore } from "../state/store";
 import { editingEventOf, useCalendarStore } from "../state/calendar";
@@ -13,18 +14,17 @@ import styles from "./TodayView.module.css";
  * 今日日程时间轴、今日到期 & 已逾期任务（含内联子任务）、已完成折叠头。
  */
 
-const now = new Date();
-const today = todayOnly();
 const DOW = "日一二三四五六";
 
-const greeting = (() => {
-  const h = now.getHours();
+/** 时段问候（按小时）。 */
+function greetingOf(d: Date): string {
+  const h = d.getHours();
   if (h < 6) return "夜深了";
   if (h < 11) return "早上好";
   if (h < 13) return "中午好";
   if (h < 18) return "下午好";
   return "晚上好";
-})();
+}
 
 function isoWeek(d: Date): number {
   const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -33,8 +33,6 @@ function isoWeek(d: Date): number {
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
   return Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
 }
-
-const dateLine = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${DOW[now.getDay()]} · 第${isoWeek(now)}周`;
 
 function isSameDay(a: Date, b: Date): boolean {
   return (
@@ -52,7 +50,7 @@ function dueOnDay(r: RecordT, ref: Date): boolean {
   const d = new Date(r.end_at);
   return !Number.isNaN(d.getTime()) && isSameDay(d, ref);
 }
-function isOverdue(r: RecordT): boolean {
+function isOverdue(r: RecordT, now: Date): boolean {
   if (r.end_at === null) return false;
   const d = new Date(r.end_at);
   if (Number.isNaN(d.getTime())) return false;
@@ -60,7 +58,7 @@ function isOverdue(r: RecordT): boolean {
 }
 
 /** 截止标签（DuePill 文案 + 是否逾期着色）。 */
-function dueLabel(r: RecordT): { text: string; overdue: boolean } {
+function dueLabel(r: RecordT, now: Date): { text: string; overdue: boolean } {
   if (!r.end_at) return { text: "", overdue: false };
   const d = new Date(r.end_at);
   if (Number.isNaN(d.getTime())) return { text: "", overdue: false };
@@ -152,11 +150,27 @@ export default function TodayView() {
   // AI 工具等外部变更后自增，触发本视图重载今日事件。
   const dataVersion = useAppStore((s) => s.dataVersion);
 
+  // 响应式「今天」+ 分钟级时钟：托盘常驻跨午夜后，日期文案/问候/今日过滤/逾期
+  // 判定全部跟随滚动（模块顶层固化 now/today 是「定位到昨天」BUG 的根因）。
+  const today = useToday();
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    let id: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      setNow(new Date());
+      id = setTimeout(tick, 60_000 - (Date.now() % 60_000) + 50);
+    };
+    tick();
+    return () => clearTimeout(id);
+  }, []);
+  const greeting = greetingOf(now);
+  const dateLine = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${DOW[now.getDay()]} · 第${isoWeek(now)}周`;
+
   useEffect(() => {
     void loadEvents(today, addDays(today, 1)).catch(() => {
       /* 非 Tauri 环境忽略；根页有统一错误提示 */
     });
-  }, [loadEvents, dataVersion]);
+  }, [loadEvents, dataVersion, today]);
 
   // 编辑器关闭后重取今日事件（与 Svelte $effect 等价）。
   const editing = editingEventOf(calEvents, editingId) !== undefined;
@@ -166,7 +180,7 @@ export default function TodayView() {
       void loadEvents(today, addDays(today, 1)).catch(() => {});
     }
     wasEditing.current = editing;
-  }, [editing, loadEvents]);
+  }, [editing, loadEvents, today]);
 
   const todayEvents = useMemo(
     () => [...renderEvents].filter((e) => e.status !== "cancelled")
@@ -176,27 +190,27 @@ export default function TodayView() {
 
   const dueToday = useMemo(
     () => records.filter((r) => r.parent_id === null && r.status === "active" && dueOnDay(r, now)),
-    [records],
+    [records, now],
   );
   const overdue = useMemo(
-    () => records.filter((r) => r.parent_id === null && r.status === "active" && isOverdue(r)),
-    [records],
+    () => records.filter((r) => r.parent_id === null && r.status === "active" && isOverdue(r, now)),
+    [records, now],
   );
   const doneToday = useMemo(
     () => records.filter((r) => r.parent_id === null && r.status === "done" && dueOnDay(r, now)),
-    [records],
+    [records, now],
   );
   /** 已完成条目（含截止信息；与今日任务同构，供折叠区渲染）。 */
   const doneItems = useMemo<TaskItem[]>(
     () =>
       doneToday.map((t) => ({
         t,
-        due: dueLabel(t),
+        due: dueLabel(t, now),
         subs: [],
         subsActive: 0,
         subsDone: 0,
       })),
-    [doneToday],
+    [doneToday, now],
   );
 
   const todayItems = useMemo<TaskItem[]>(() => {
@@ -213,13 +227,13 @@ export default function TodayView() {
       const subs = records.filter((s) => s.parent_id === t.id && s.status !== "cancelled");
       return {
         t,
-        due: dueLabel(t),
+        due: dueLabel(t, now),
         subsActive: subs.filter((s) => s.status === "active").length,
         subsDone: subs.filter((s) => s.status === "done").length,
-        subs: subs.map((s) => ({ s, due: dueLabel(s) })),
+        subs: subs.map((s) => ({ s, due: dueLabel(s, now) })),
       };
     });
-  }, [overdue, dueToday, records]);
+  }, [overdue, dueToday, records, now]);
 
   const toggle = (e: React.MouseEvent | React.KeyboardEvent, r: RecordT) => {
     e.stopPropagation();
