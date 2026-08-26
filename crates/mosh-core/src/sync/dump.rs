@@ -122,7 +122,8 @@ mod tests {
             tool_args: None,
             tool_result: None,
             created_at: "2026-08-18T09:00:00+00:00".into(),
-        })
+                images: vec![],
+            })
         .unwrap();
         db
     }

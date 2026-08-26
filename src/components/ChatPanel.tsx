@@ -4,6 +4,8 @@ import "streamdown/styles.css";
 import { toolLabel, useAgentStore, type UiMessage } from "../state/agent";
 import { useAppStore } from "../state/store";
 import { useDialogStore } from "../state/dialog";
+import { toast } from "../state/toast";
+import { filesToAttachments, MAX_ATTACHMENTS } from "../lib/image";
 import { PERMISSION_MODES, type PermissionMode } from "../lib/types";
 import styles from "./ChatPanel.module.css";
 
@@ -252,9 +254,11 @@ export default function ChatPanel() {
   const openSettings = useAppStore((s) => s.openSettings);
 
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<string[]>([]);
   const [pop, setPop] = useState<"none" | "skills" | "mcp">("none");
   const listRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void init();
@@ -280,12 +284,33 @@ export default function ChatPanel() {
     }
   }
 
+  /** 选图/粘贴/拖拽共用：压缩 + 数量把关（超限 toast 提示）。 */
+  async function addFiles(files: File[]) {
+    setAttachments(await filesToAttachments(files, attachments, (m) => toast.error(m)));
+  }
+
+  function onPaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData.files);
+    if (files.length > 0) {
+      e.preventDefault(); // 粘贴图片文件时不把文件名写进输入框
+      void addFiles(files);
+    }
+  }
+
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) void addFiles(files);
+  }
+
   async function onSend() {
     const t = input;
-    if (t.trim().length === 0 || useAgentStore.getState().streaming) return;
+    const imgs = attachments;
+    if ((t.trim().length === 0 && imgs.length === 0) || useAgentStore.getState().streaming) return;
     setInput("");
+    setAttachments([]);
     setPop("none");
-    await send(t);
+    await send(t, imgs);
   }
 
   async function onDeleteSession(id: string, title: string) {
@@ -301,6 +326,9 @@ export default function ChatPanel() {
 
   const activeSkills = skills.filter((s) => s.active).length;
   const enabledMcp = mcpServers.filter((s) => s.enabled).length;
+  // 首包等待：流式中但还没有任何流式文本气泡（LLM 首字前 / 工具执行间隙）。
+  const waitingFirst =
+    streaming && !messages.some((m) => m.streaming) && !pendingApproval;
 
   return (
     <section className={`${styles.chat}${!chatSideVisible ? ` ${styles["side-hidden"]}` : ""}`}>
@@ -335,14 +363,24 @@ export default function ChatPanel() {
                 <div className={styles.empty}>
                   <div className={styles["empty-title"]}>有什么可以帮你安排？</div>
                   <div className={styles["empty-sub"]}>
-                    试试：「明早十点开周会」「建个待办：交季度报告，下周五截止」「我今天有什么安排」
+                    试试：「明早十点开周会」「建个待办：交季度报告，下周五截止」「我今天有什么安排」；
+                    也可粘贴/上传图片提问（需视觉模型）
                   </div>
                 </div>
               ) : null}
               {messages.map((m) =>
                 m.role === "user" ? (
                   <div key={m.key} className={`${styles.row} ${styles["user-row"]}`}>
-                    <div className={`${styles.bubble} ${styles.user}`}>{m.text}</div>
+                    <div className={`${styles.bubble} ${styles.user}`}>
+                      {m.images && m.images.length > 0 ? (
+                        <div className={styles["bubble-imgs"]}>
+                          {m.images.map((src, i) => (
+                            <img key={i} src={src} alt="附件图片" className={styles["bubble-img"]} />
+                          ))}
+                        </div>
+                      ) : null}
+                      {m.text}
+                    </div>
                   </div>
                 ) : m.role === "assistant" ? (
                   <div key={m.key} className={`${styles.row} ${styles["bot-row"]}`}>
@@ -361,6 +399,15 @@ export default function ChatPanel() {
                   </div>
                 ) : null,
               )}
+              {waitingFirst ? (
+                <div className={`${styles.row} ${styles["bot-row"]}`}>
+                  <div className={`${styles.bubble} ${styles.bot} ${styles.thinking}`}>
+                    <span className={styles.dots} aria-label="思考中">
+                      <span /><span /><span />
+                    </span>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             {error ? <div className={styles.err}>{error}</div> : null}
@@ -391,14 +438,35 @@ export default function ChatPanel() {
               </div>
             ) : null}
 
-            {/* 输入区（composer）：自动增高 textarea + 底部工具条 */}
-            <div className={styles.composer}>
+            {/* 输入区（composer）：附件预览 + 自动增高 textarea + 底部工具条 */}
+            <div className={styles.composer} onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
+              {attachments.length > 0 ? (
+                <div className={styles["attach-row"]}>
+                  {attachments.map((src, i) => (
+                    <div key={i} className={styles["attach-chip"]}>
+                      <img src={src} alt="待发送图片" />
+                      <button
+                        type="button"
+                        className={styles["attach-x"]}
+                        aria-label="移除图片"
+                        title="移除"
+                        onClick={() => setAttachments(attachments.filter((_, j) => j !== i))}
+                      >
+                        <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+                          <path d="M6 6l12 12M18 6L6 18" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <textarea
                 ref={taRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeydown}
-                placeholder={streaming ? "回复中…（可点右侧停止）" : "输入消息，Enter 发送，Shift+Enter 换行"}
+                onPaste={onPaste}
+                placeholder={streaming ? "回复中…（可点右侧停止）" : "输入消息，Enter 发送，Shift+Enter 换行；可粘贴/拖入图片"}
                 rows={3}
                 disabled={configured !== true}
               />
@@ -429,6 +497,23 @@ export default function ChatPanel() {
                       </option>
                     ))}
                   </select>
+
+                  <button
+                    type="button"
+                    className={`${styles["tool-btn"]}${attachments.length > 0 ? ` ${styles.on}` : ""}`}
+                    onClick={() => fileRef.current?.click()}
+                    title={`上传图片（最多 ${MAX_ATTACHMENTS} 张，需视觉模型）`}
+                  >
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="5" width="18" height="14" rx="2.5" />
+                      <circle cx="8.5" cy="10" r="1.6" />
+                      <path d="M4 17.5l5-5 4 4 3.5-3.5L20 16.5" />
+                    </svg>
+                    <span>图片</span>
+                    {attachments.length > 0 ? (
+                      <span className={styles["tool-badge"]}>{attachments.length}</span>
+                    ) : null}
+                  </button>
 
                   <button
                     type="button"
@@ -466,13 +551,26 @@ export default function ChatPanel() {
                   <button
                     type="button"
                     className={styles.send}
-                    disabled={input.trim().length === 0}
+                    disabled={input.trim().length === 0 && attachments.length === 0}
                     onClick={() => void onSend()}
                   >
                     发送
                   </button>
                 )}
               </div>
+
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  e.target.value = ""; // 允许连续选同一文件
+                  if (files.length > 0) void addFiles(files);
+                }}
+              />
 
               {pop === "skills" ? <SkillsPopover onClose={() => setPop("none")} /> : null}
               {pop === "mcp" ? <McpPopover onClose={() => setPop("none")} /> : null}

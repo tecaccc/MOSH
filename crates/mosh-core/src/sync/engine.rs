@@ -302,7 +302,8 @@ mod tests {
             tool_args: None,
             tool_result: None,
             created_at: "2026-08-18T09:00:00+00:00".into(),
-        })
+                images: vec![],
+            })
         .unwrap();
         full_sync(&a, &remote).await.unwrap();
 
@@ -340,7 +341,8 @@ mod tests {
             tool_args: None,
             tool_result: None,
             created_at: "2020-01-01T09:00:00+00:00".into(),
-        })
+                images: vec![],
+            })
         .unwrap();
         full_sync(&a, &remote).await.unwrap();
 
@@ -364,6 +366,7 @@ mod tests {
                 tool_args: None,
                 tool_result: None,
                 created_at: "2026-08-18T09:00:01+00:00".into(),
+                images: vec![],
             })
             .unwrap());
         full_sync(&a, &remote).await.unwrap();

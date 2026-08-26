@@ -147,7 +147,8 @@ mod tests {
             tool_args: None,
             tool_result: None,
             created_at: "2026-08-18T09:00:00+00:00".into(),
-        }
+                images: vec![],
+            }
     }
 
     fn setting(key: &str, value: &str, updated_at: &str) -> SettingRow {
@@ -325,7 +326,7 @@ mod tests {
                 deleted_at: "2026-08-18T12:00:00+00:00".into(),
             }],
         };
-        let stats = apply(&db, &[remote.clone()]).unwrap();
+        let stats = apply(&db, std::slice::from_ref(&remote)).unwrap();
         // s1：本地消息清理 + 旧消息不插回；s2：新消息到达。
         assert!(db.list_agent_messages("s1").unwrap().is_empty());
         assert!(db.list_agent_sessions().unwrap().iter().all(|s| s.session_id != "s1"));

@@ -50,6 +50,8 @@ export interface UiMessage {
   key: string;
   role: "user" | "assistant" | "tool";
   text: string;
+  /** 图片附件（data URL；仅 user 消息）。 */
+  images?: string[];
   tool?: string;
   args?: unknown;
   result?: unknown;
@@ -115,7 +117,7 @@ interface AgentState {
   newSession(): void;
   openSession(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
-  send(text: string): Promise<void>;
+  send(text: string, images?: string[]): Promise<void>;
   abort(): Promise<void>;
   selectModel(m: string): void;
   undoCreate(m: UiMessage): Promise<void>;
@@ -372,7 +374,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     }
   },
 
-  /** 打开历史会话（DB 重放）。 */
+  /** 打开历史会话（DB 重放，含图片附件）。 */
   openSession: async (id) => {
     streamingKey = null;
     set({ currentSession: id });
@@ -383,6 +385,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
           key: `db${r.id}`,
           role: r.role as UiMessage["role"],
           text: r.content,
+          images: r.images && r.images.length > 0 ? r.images : undefined,
           tool: r.tool_name ?? undefined,
           args: safeJson(r.tool_args),
           result: safeJson(r.tool_result),
@@ -414,19 +417,28 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     }
   },
 
-  /** 发送消息：落 UI 气泡 + 驱动后端循环；失败（未配置/在跑）→ error。 */
-  send: async (text) => {
+  /** 发送消息（可附图片）：落 UI 气泡 + 驱动后端循环；失败（未配置/在跑）→ error。 */
+  send: async (text, images) => {
     const t = text.trim();
-    if (t.length === 0 || get().streaming) return;
+    const imgs = images ?? [];
+    if ((t.length === 0 && imgs.length === 0) || get().streaming) return;
     if (!get().currentSession) get().newSession();
     lastTurnSession = get().currentSession;
     set((s) => ({
       error: null,
       streaming: true,
-      messages: [...s.messages, { key: nextKey(), role: "user", text: t }],
+      messages: [
+        ...s.messages,
+        {
+          key: nextKey(),
+          role: "user",
+          text: t,
+          images: imgs.length > 0 ? imgs : undefined,
+        },
+      ],
     }));
     try {
-      await ipcSend(get().currentSession, t, get().selectedModel);
+      await ipcSend(get().currentSession, t, get().selectedModel, imgs.length > 0 ? imgs : undefined);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

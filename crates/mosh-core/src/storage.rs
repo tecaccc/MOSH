@@ -15,6 +15,7 @@ fn mark_dirty() {
 
 /// Agent 会话消息行（对齐 `agent_messages` 表）。
 /// id 为 UUIDv7（跨设备不撞号、按时间字典序可排序）。
+/// `images` 为随 user 消息携带的图片 data URL（JSON 数组文本存库；同步随行携带）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentMessage {
     #[serde(default)]
@@ -30,6 +31,9 @@ pub struct AgentMessage {
     pub tool_args: Option<String>,
     #[serde(default)]
     pub tool_result: Option<String>,
+    /// 图片附件（data URL；仅 user 行可非空，旧数据/旧行无此字段 → 空）。
+    #[serde(default)]
+    pub images: Vec<String>,
     pub created_at: String,
 }
 
@@ -141,6 +145,9 @@ fn migrations() -> Migrations<'static> {
         );
         "#,
         ),
+        // v7：agent_messages 加 images——user 消息的图片附件（data URL JSON 数组；
+        // NULL = 无图）。图片进 LLM 上下文与同步 dump/merge（随 AgentMessage serde）。
+        M::up("ALTER TABLE agent_messages ADD COLUMN images TEXT;"),
     ])
 }
 
@@ -420,10 +427,15 @@ impl SqliteStorage {
         } else {
             msg.id.clone()
         };
+        let images_json = if msg.images.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&msg.images)?)
+        };
         let n = conn.execute(
             "INSERT INTO agent_messages
-             (id, session_id, role, content, tool_name, tool_args, tool_result, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             (id, session_id, role, content, tool_name, tool_args, tool_result, images, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO NOTHING",
             params![
                 id,
@@ -433,6 +445,7 @@ impl SqliteStorage {
                 msg.tool_name,
                 msg.tool_args,
                 msg.tool_result,
+                images_json,
                 msg.created_at
             ],
         )?;
@@ -443,7 +456,7 @@ impl SqliteStorage {
     pub fn list_all_agent_messages(&self) -> Result<Vec<AgentMessage>, CoreError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, created_at
+            "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, images, created_at
              FROM agent_messages ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], row_to_agent_message)?;
@@ -454,7 +467,7 @@ impl SqliteStorage {
     pub fn list_agent_messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, CoreError> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, created_at
+            "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, images, created_at
              FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map(params![session_id], row_to_agent_message)?;
@@ -606,7 +619,12 @@ fn row_to_agent_message(row: &rusqlite::Row<'_>) -> Result<AgentMessage, rusqlit
         tool_name: row.get(4)?,
         tool_args: row.get(5)?,
         tool_result: row.get(6)?,
-        created_at: row.get(7)?,
+        // NULL / 损坏 JSON → 空（旧库升级行无此列值）。
+        images: row
+            .get::<_, Option<String>>(7)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
+        created_at: row.get(8)?,
     })
 }
 
@@ -926,7 +944,8 @@ mod tests {
             tool_args: None,
             tool_result: None,
             created_at: crate::model::now_iso(),
-        }
+                images: vec![],
+            }
     }
 
     #[test]
@@ -948,6 +967,8 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[1].content, "已创建日程");
+        // 无图消息 → 空 images（v7 列存在且往返一致）。
+        assert!(msgs[0].images.is_empty());
 
         // 摘要：最近活跃在前，标题取首条 user 截断。
         let sessions = db.list_agent_sessions().unwrap();
@@ -956,6 +977,25 @@ mod tests {
         assert!(sessions[0].title.ends_with("…"));
         assert_eq!(sessions[0].message_count, 1);
         assert_eq!(sessions[1].title, "明早十点开周会");
+    }
+
+    #[test]
+    fn agent_message_images_roundtrip() {
+        // v7：图片 data URL 数组随消息存取（JSON 文本）；同步显式 id 重放同样携带。
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let mut msg = agent_msg("s1", "user", "看这张图");
+        msg.id = "img-1".to_string(); // 显式 id：同步重放幂等语义的前提
+        msg.images = vec![
+            "data:image/jpeg;base64,AAA".to_string(),
+            "data:image/png;base64,BBB".to_string(),
+        ];
+        db.append_agent_message(&msg).unwrap();
+        let back = &db.list_agent_messages("s1").unwrap()[0];
+        assert_eq!(back.images, msg.images);
+
+        // 同步重放：显式 id + 同 images 幂等（已存在 → 忽略，不重复不丢图）。
+        db.append_agent_message(&msg).unwrap();
+        assert_eq!(db.list_agent_messages("s1").unwrap().len(), 1);
     }
 
     #[test]

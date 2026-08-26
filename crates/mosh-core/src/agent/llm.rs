@@ -50,6 +50,8 @@ pub struct ToolSpec {
 }
 
 /// 对话消息（OpenAI 协议格式；tool 行须带 tool_call_id 引用 assistant 的 tool_calls）。
+/// `images` 为随 user 消息携带的图片 data URL（vision 多模态）；不参与序列化
+/// 默认输出——带图时经 [`ChatMessage::to_request_value`] 组装为 content 数组。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -62,6 +64,9 @@ pub struct ChatMessage {
     /// 仅 role=tool 时非空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// 仅 user 消息可非空：图片 data URL 列表（请求组装用，见 to_request_value）。
+    #[serde(default, skip)]
+    pub images: Vec<String>,
 }
 
 impl ChatMessage {
@@ -71,6 +76,7 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: vec![],
             tool_call_id: None,
+            images: vec![],
         }
     }
 
@@ -80,6 +86,15 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: vec![],
             tool_call_id: None,
+            images: vec![],
+        }
+    }
+
+    /// 带图 user 消息（vision）：`images` 为 data URL 列表。
+    pub fn user_with_images(content: impl Into<String>, images: Vec<String>) -> Self {
+        Self {
+            images,
+            ..Self::user(content)
         }
     }
 
@@ -89,6 +104,7 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: vec![],
             tool_call_id: None,
+            images: vec![],
         }
     }
 
@@ -98,6 +114,7 @@ impl ChatMessage {
             content: None,
             tool_calls,
             tool_call_id: None,
+            images: vec![],
         }
     }
 
@@ -107,7 +124,25 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: vec![],
             tool_call_id: Some(tool_call_id.into()),
+            images: vec![],
         }
+    }
+
+    /// 组装为请求 JSON：user 带图时 content 为 OpenAI vision 数组
+    /// （`[{type:"text"},{type:"image_url"}]`）；其余走标准对象序列化
+    /// （无图时与旧版线格式逐字节一致，全供应商兼容）。
+    pub fn to_request_value(&self) -> Value {
+        if self.role == "user" && !self.images.is_empty() {
+            let mut parts: Vec<Value> = vec![];
+            if let Some(t) = self.content.as_deref().filter(|t| !t.is_empty()) {
+                parts.push(json!({"type": "text", "text": t}));
+            }
+            for url in &self.images {
+                parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+            }
+            return json!({"role": "user", "content": parts});
+        }
+        serde_json::to_value(self).unwrap_or(Value::Null)
     }
 }
 
@@ -213,7 +248,7 @@ impl OpenAiClient {
 
         let body = json!({
             "model": self.cfg.model,
-            "messages": messages,
+            "messages": messages.iter().map(ChatMessage::to_request_value).collect::<Vec<_>>(),
             "tools": tools_json,
             "stream": true,
         });
@@ -488,6 +523,35 @@ mod tests {
         assert_eq!(v["role"], "tool");
         assert_eq!(v["tool_call_id"], "call_1");
         assert_eq!(v["content"], r#"{"ok":true}"#);
+    }
+
+    /// vision：带图 user 消息组装为 OpenAI content 数组（text + image_url）。
+    #[test]
+    fn user_message_with_images_serializes_to_vision_array() {
+        let m = ChatMessage::user_with_images(
+            "这张图里有什么",
+            vec!["data:image/jpeg;base64,AAA".into(), "data:image/png;base64,BBB".into()],
+        );
+        let v = m.to_request_value();
+        assert_eq!(v["role"], "user");
+        let content = v["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "这张图里有什么");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/jpeg;base64,AAA");
+        assert_eq!(content[2]["image_url"]["url"], "data:image/png;base64,BBB");
+
+        // 纯文本（无图）不携带 images 字段，线格式与旧版一致。
+        let plain = ChatMessage::user("你好").to_request_value();
+        assert_eq!(plain["content"], "你好");
+        assert!(plain.get("images").is_none());
+
+        // 空文本 + 图：只发 image 部分（图片-only 消息）。
+        let img_only = ChatMessage::user_with_images("", vec!["data:image/jpeg;base64,AAA".into()]);
+        let content = img_only.to_request_value()["content"].as_array().unwrap().clone();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "image_url");
     }
 
     /// 回归：多字节 UTF-8 字符被 TCP 分块切开时，行重组不得产生 U+FFFD

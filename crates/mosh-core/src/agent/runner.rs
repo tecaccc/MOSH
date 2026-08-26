@@ -23,6 +23,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const MAX_STEPS: usize = 8;
 /// 送入 LLM 的历史消息条数上限（截断防 token 膨胀）。
 pub const HISTORY_LIMIT: usize = 40;
+/// 带图 user 消息进入上下文的条数上限（旧图不重发，防 token/费用膨胀；
+/// UI 历史回看不受限，仍展示全部图片）。
+const CONTEXT_IMAGE_MESSAGES: usize = 3;
 
 /// 一轮对话的外部增强（Skills + MCP 工具 + 审批模式）。
 /// - `skills`：启用的技能，其 prompt 追加到系统提示词；
@@ -99,6 +102,7 @@ pub async fn run_turn<C: LlmClient>(
         client,
         session_id,
         user_text,
+        &[],
         turn_id,
         on_event,
         abort,
@@ -108,13 +112,15 @@ pub async fn run_turn<C: LlmClient>(
     .await
 }
 
-/// [`run_turn`] 的增强版：附加 Skills 提示词、MCP 外部工具与审批闸门。
-#[allow(clippy::too_many_arguments)] // 与 run_turn 同构 + extras + gate，签名即文档
+/// [`run_turn`] 的增强版：附加 Skills 提示词、MCP 外部工具、审批闸门与图片附件。
+/// `user_images` 为本轮 user 消息携带的图片 data URL（落库并进上下文）。
+#[allow(clippy::too_many_arguments)] // 与 run_turn 同构 + images/extras/gate，签名即文档
 pub async fn run_turn_with<C: LlmClient>(
     db: &SqliteStorage,
     client: &C,
     session_id: &str,
     user_text: &str,
+    user_images: &[String],
     turn_id: &str,
     on_event: &(dyn Fn(AgentEvent) + Send + Sync),
     abort: &AtomicBool,
@@ -135,7 +141,7 @@ pub async fn run_turn_with<C: LlmClient>(
         Ok(())
     };
 
-    // 1) user 消息落库并进入上下文。
+    // 1) user 消息（含图片附件）落库并进入上下文。
     db.append_agent_message(&AgentMessage {
         id: String::new(),
         session_id: session_id.to_string(),
@@ -144,6 +150,7 @@ pub async fn run_turn_with<C: LlmClient>(
         tool_name: None,
         tool_args: None,
         tool_result: None,
+        images: user_images.to_vec(),
         created_at: now_iso(),
     })?;
 
@@ -275,6 +282,7 @@ async fn exec_tool(
         tool_name: Some(tc.function.name.clone()),
         tool_args: Some(tc.function.arguments.clone()),
         tool_result: Some(result.to_string()),
+        images: vec![],
         created_at: now_iso(),
     };
     (event, row)
@@ -303,6 +311,7 @@ fn rejected_tool(
         tool_name: Some(tc.function.name.clone()),
         tool_args: Some(tc.function.arguments.clone()),
         tool_result: Some(result.to_string()),
+        images: vec![],
         created_at: now_iso(),
     };
     (event, row)
@@ -315,12 +324,28 @@ fn build_context(
     extras: &TurnExtras,
 ) -> Result<Vec<ChatMessage>, CoreError> {
     let history = db.list_agent_messages(session_id)?;
+    // 带图行进入上下文的白名单：最近 CONTEXT_IMAGE_MESSAGES 条带图 user 行
+    // （更早的图片不再重发，防多轮后 token/费用膨胀；UI 回看不受限）。
+    let image_row_ids: Vec<&str> = history
+        .iter()
+        .rev()
+        .filter(|r| r.role == "user" && !r.images.is_empty())
+        .take(CONTEXT_IMAGE_MESSAGES)
+        .map(|r| r.id.as_str())
+        .collect();
     let mut msgs = vec![ChatMessage::system(system_prompt(
         skills_prompt(&extras.skills).as_deref(),
     ))];
     for row in history.iter().rev().take(HISTORY_LIMIT).rev() {
         let m = match row.role.as_str() {
-            "user" => ChatMessage::user(&row.content),
+            "user" => {
+                let images = if image_row_ids.contains(&row.id.as_str()) {
+                    row.images.clone()
+                } else {
+                    vec![]
+                };
+                ChatMessage::user_with_images(&row.content, images)
+            }
             "assistant" if !row.content.trim().is_empty() => ChatMessage::assistant(&row.content),
             _ => continue, // tool 行：见模块注释
         };
@@ -342,7 +367,7 @@ fn system_prompt(skills: Option<&str>) -> String {
          2. 创建/修改成功后，用一两句话向用户复述结果（标题与时间）。\n\
          3. 调用工具时用经过校验的参数：id 只能来自工具结果，不要编造。\n\
          4. 查询类请求先调 list_todos / list_events，再基于结果回答，不要臆造数据。\n\
-         5. 修改已有日程用 update_event（只需传要改的字段）；删除日程用 delete_event（单条）或 delete_events（批量）：id 必须来自 list_events 或创建结果，删除前先查询确认目标，删除后向用户复述删了什么；不确定时先列出候选向用户确认再删。\n\
+         5. 修改已有日程用 update_event，修改已有待办用 update_todo（都只需传要改的字段；待办的 description/due_at 传 null 可清除）；删除日程用 delete_event（单条）或 delete_events（批量）：id 必须来自查询或创建结果，删除前先查询确认目标，删除后向用户复述删了什么；不确定时先列出候选向用户确认再删。\n\
          6. 周期事件可用 recurrence（daily/weekly/monthly/yearly）；提醒用 reminder_minutes（提前分钟数）。\n\
          7. 用户意图不清（如缺时间、标题不明）时，先追问再创建。",
         now.format("%Y-%m-%d %H:%M"),
@@ -364,6 +389,7 @@ fn persist_text(db: &SqliteStorage, session_id: &str, content: &str) -> Result<(
         tool_name: None,
         tool_args: None,
         tool_result: None,
+        images: vec![],
         created_at: now_iso(),
     })
     .map(|_| ())
@@ -624,6 +650,7 @@ mod tests {
                 tool_args: None,
                 tool_result: None,
                 created_at: now_iso(),
+                images: vec![],
             })
             .unwrap();
         }
@@ -632,6 +659,62 @@ mod tests {
         assert_eq!(ctx[0].role, "system");
         assert_eq!(ctx[1].content.as_deref(), Some("q1"));
         assert_eq!(ctx[2].content.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn build_context_includes_recent_images_only() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        // 4 条带图 user 消息（显式 id 保证顺序）：仅最近 3 条的图片进上下文。
+        for i in 0..4 {
+            db.append_agent_message(&AgentMessage {
+                id: format!("u{i}"),
+                session_id: "s".into(),
+                role: "user".into(),
+                content: format!("图{i}"),
+                tool_name: None,
+                tool_args: None,
+                tool_result: None,
+                images: vec![format!("data:image/jpeg;base64,{i}")],
+                created_at: now_iso(),
+            })
+            .unwrap();
+        }
+        let ctx = build_context(&db, "s", &TurnExtras::default()).unwrap();
+        let users: Vec<&ChatMessage> = ctx.iter().filter(|m| m.role == "user").collect();
+        assert_eq!(users.len(), 4);
+        assert!(users[0].images.is_empty(), "最早的带图消息不重发图片");
+        assert_eq!(users[1].images, vec!["data:image/jpeg;base64,1".to_string()]);
+        assert_eq!(users[3].images, vec!["data:image/jpeg;base64,3".to_string()]);
+        // 无图消息依旧纯文本。
+        assert!(users[0].images.is_empty());
+    }
+
+    #[tokio::test]
+    async fn user_images_persisted_with_message() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let mock = MockLlm::new(vec![Reply {
+            content: "看到了".into(),
+            tool_calls: vec![],
+        }]);
+        let (_log, on_event) = collector();
+        run_turn_with(
+            &db,
+            &mock,
+            "s1",
+            "看这张图",
+            &["data:image/png;base64,AA".to_string()],
+            "t1",
+            &on_event,
+            &AtomicBool::new(false),
+            &TurnExtras::default(),
+            &AutoApprove,
+        )
+        .await
+        .unwrap();
+        let msgs = db.list_agent_messages("s1").unwrap();
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].images, vec!["data:image/png;base64,AA".to_string()]);
+        assert!(msgs[1].images.is_empty(), "assistant 行不带图");
     }
 
     #[test]
@@ -700,6 +783,7 @@ mod tests {
             &mock,
             "s1",
             "搜一下",
+            &[],
             "t1",
             &on_event,
             &AtomicBool::new(false),
@@ -752,6 +836,7 @@ mod tests {
             &mock,
             "s1",
             "建个待办",
+            &[],
             "t1",
             &on_event,
             &AtomicBool::new(false),

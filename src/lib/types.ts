@@ -277,6 +277,8 @@ export interface AgentMessage {
   tool_name: string | null;
   tool_args: string | null;
   tool_result: string | null;
+  /** 图片附件（data URL；仅 user 行可非空，旧数据无此字段 → 空）。 */
+  images: string[] | null;
   created_at: string;
 }
 

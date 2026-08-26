@@ -164,13 +164,15 @@ export async function setCloseBehavior(behavior: CloseBehavior): Promise<void> {
 
 // —— Agent（08-15-agent-v1）——
 
-/** 发送消息并驱动一轮循环；流式事件经 `agent://*` Tauri 事件回传。 */
+/** 发送消息并驱动一轮循环；流式事件经 `agent://*` Tauri 事件回传。
+ * `images` 为图片 data URL（vision 多模态；≤4 张，前端已压缩）。 */
 export async function agentSend(
   sessionId: string,
   message: string,
   model: string,
+  images?: string[],
 ): Promise<void> {
-  await invoke<void>("agent_send", { sessionId, message, model });
+  await invoke<void>("agent_send", { sessionId, message, model, images: images ?? null });
 }
 
 /** 中止某会话在迷轮（已落库操作保留）。 */

@@ -64,7 +64,10 @@ mosh-sync/                     ← bucket 内约定前缀
 
 - **records**：按 `id` 对齐，LWW——`updated_at` 新者赢（`revision` 作 tie-breaker），
   旧的静默丢弃，无冲突 UI。
-- **agent_messages**：按 `id` 并集合并（append-only，天然无冲突）。
+- **agent_messages**：按 `id` 并集合并（append-only，天然无冲突）。2026-08-26 起行内
+  可携带 `images`（用户上传图片的 data URL JSON 数组，v7 列）：随行 JSON 序列化同步，
+  旧版本读新 dump 时忽略未知字段（无 `deny_unknown_fields`），新版本读旧 dump 时
+  `serde(default)` 回空。前端已压缩（长边 ≤1600px、JPEG、≤1.5MB、≤4 张/条）控制体积。
 - **settings**：按键覆盖，晚写赢（以 dump 时间戳为准）。
 - **墓碑**：软删记录（`deleted_at` 非空）永久保留在同步流中，v1 不做 GC，
   天然保留“误删找回”余地。

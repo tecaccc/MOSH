@@ -8,6 +8,7 @@
 use mosh_core::agent::{
     self, AgentEvent, AiConfig, LlmClient, McpServerConfig, SkillDef, TurnExtras,
 };
+use mosh_core::agent::mcp::McpToolInfo;
 use mosh_core::model::{EventInput, Record, RecordFilter, RecordPatch, Status, TodoInput};
 use mosh_core::service;
 use mosh_core::storage::{AgentMessage, AgentSessionSummary, SqliteStorage};
@@ -251,6 +252,100 @@ struct AgentRuns {
     pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
 }
 
+// —— MCP 工具缓存：发送路径零网络等待 ——
+
+/// 缓存有效期：过期后后台续期（stale-while-revalidate，期间继续用旧值）。
+const MCP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// 进程内 MCP 工具缓存条目（server id → 工具 + 拉取时刻）。
+struct CachedMcpTools {
+    tools: Vec<McpToolInfo>,
+    fetched_at: Instant,
+}
+
+/// MCP 工具内存缓存（setup 注入）。背景：发送消息前曾对每台启用服务器同步串行
+/// `initialize`+`tools/list`（各 10s 超时），慢/不可达的 MCP 直接拖住 LLM 首包
+/// （用户症状：「发过去要等好一会才回」）。现在：启动预热 + 配置变更即刷新 +
+/// 发送路径只读缓存——缺失/过期时后台拉取，本轮跳过或用旧值，绝不阻塞。
+#[derive(Default)]
+struct McpToolCache(Mutex<HashMap<String, CachedMcpTools>>);
+
+/// 后台拉取一台服务器的工具列表并写缓存（失败仅日志，保留旧值）。
+fn spawn_mcp_fetch(app: &tauri::AppHandle, srv: McpServerConfig) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match agent::mcp::list_tools(&srv).await {
+            Ok(raw) => {
+                let tools = agent::mcp::to_tool_infos(&srv, &raw);
+                eprintln!("[mcp] {} 装载 {} 个工具", srv.name, tools.len());
+                if let Some(cache) = app.try_state::<McpToolCache>() {
+                    if let Ok(mut map) = cache.0.lock() {
+                        map.insert(
+                            srv.id.clone(),
+                            CachedMcpTools {
+                                tools,
+                                fetched_at: Instant::now(),
+                            },
+                        );
+                    }
+                }
+            }
+            Err(e) => eprintln!("[mcp] {} 装载失败（跳过，保留旧缓存）：{e}", srv.name),
+        }
+    });
+}
+
+/// 预热：后台拉取全部启用服务器的工具（启动与同步落地设置后调用）。
+fn refresh_mcp_cache(app: &tauri::AppHandle, state: &SqliteStorage) {
+    for srv in load_mcp_servers(state).into_iter().filter(|s| s.enabled) {
+        spawn_mcp_fetch(app, srv);
+    }
+}
+
+/// 从缓存取启用服务器的工具（发送路径用）。命中即用（过期同时后台续期）；
+/// 缺失则后台拉取且本轮跳过（下一轮自然可用）。**绝不等待网络**。
+fn mcp_extras_cached(
+    app: &tauri::AppHandle,
+    state: &SqliteStorage,
+) -> Vec<(McpServerConfig, Vec<McpToolInfo>)> {
+    let cache = app.try_state::<McpToolCache>();
+    let mut out = Vec::new();
+    for srv in load_mcp_servers(state).into_iter().filter(|s| s.enabled) {
+        let mut hit: Option<Vec<McpToolInfo>> = None;
+        let mut stale = false;
+        if let Some(cache) = cache.as_ref() {
+            if let Ok(map) = cache.0.lock() {
+                if let Some(entry) = map.get(&srv.id) {
+                    hit = Some(entry.tools.clone());
+                    stale = entry.fetched_at.elapsed() >= MCP_CACHE_TTL;
+                }
+            }
+        }
+        match hit {
+            Some(tools) => {
+                if stale {
+                    spawn_mcp_fetch(app, srv.clone());
+                }
+                out.push((srv, tools));
+            }
+            None => {
+                eprintln!("[mcp] {} 缓存未就绪（本轮跳过，后台拉取中）", srv.name);
+                spawn_mcp_fetch(app, srv);
+            }
+        }
+    }
+    out
+}
+
+/// 从缓存中移除一台服务器（删除/停用时；防陈旧配置残留）。
+fn drop_mcp_cache_entry(app: &tauri::AppHandle, id: &str) {
+    if let Some(cache) = app.try_state::<McpToolCache>() {
+        if let Ok(mut map) = cache.0.lock() {
+            map.remove(id);
+        }
+    }
+}
+
 /// 审批闸门（会话级）：注册 oneshot 等待前端决定；中止时轮询 abort 标志退出。
 struct SessionGate {
     pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
@@ -305,8 +400,9 @@ fn load_ai_config(state: &SqliteStorage) -> Result<AiConfig, String> {
     Ok(cfg.normalized())
 }
 
-/// 发送一条用户消息并驱动一轮 Agent 循环；事件经 `agent://*` 回传。
-/// `model` 为聊天界面所选模型（非空时覆盖配置里的默认模型）。
+/// 发送一条用户消息（可附图片）并驱动一轮 Agent 循环；事件经 `agent://*` 回传。
+/// `model` 为聊天界面所选模型（非空时覆盖配置里的默认模型）；
+/// `images` 为图片 data URL（vision 多模态，前端已压缩）。
 #[tauri::command]
 async fn agent_send(
     app: tauri::AppHandle,
@@ -315,8 +411,22 @@ async fn agent_send(
     session_id: String,
     message: String,
     model: String,
+    images: Option<Vec<String>>,
 ) -> Result<(), String> {
-    if message.trim().is_empty() {
+    // 图片附件校验：≤4 张、data:image/ 前缀、单张约 ≤1.8MB（前端已压缩，兼容兑底）。
+    let images = images.unwrap_or_default();
+    if images.len() > 4 {
+        return Err("单条消息最多附带 4 张图片".to_string());
+    }
+    for url in &images {
+        if !url.starts_with("data:image/") {
+            return Err("仅支持图片类型的附件".to_string());
+        }
+        if url.len() > 2_500_000 {
+            return Err("图片过大，请换用更小的图片".to_string());
+        }
+    }
+    if message.trim().is_empty() && images.is_empty() {
         return Err("消息不能为空".to_string());
     }
     let mut cfg = load_ai_config(&state)?;
@@ -354,24 +464,15 @@ async fn agent_send(
     let turn_id = mosh_core::model::new_id();
     let client = agent::OpenAiClient::new(&cfg);
 
-    // 装载本轮增强：启用技能 + 启用的 MCP 服务器工具（单台失败跳过不阻塞）+ 审批模式。
+    // 装载本轮增强：启用技能 + 启用的 MCP 服务器工具（**读缓存，零网络等待**；
+    // 缓存由启动预热/配置变更/过期后台续期维护，见 McpToolCache）+ 审批模式。
     let extras = {
         let skills = skills_inner(&state)
             .into_iter()
             .filter(|s| s.active)
             .map(|s| s.def)
             .collect::<Vec<_>>();
-        let mut mcp = Vec::new();
-        for srv in load_mcp_servers(&state).into_iter().filter(|s| s.enabled) {
-            match agent::mcp::list_tools(&srv).await {
-                Ok(raw) => {
-                    let tools = agent::mcp::to_tool_infos(&srv, &raw);
-                    eprintln!("[mcp] {} 装载 {} 个工具", srv.name, tools.len());
-                    mcp.push((srv, tools));
-                }
-                Err(e) => eprintln!("[mcp] {} 装载失败（跳过）：{e}", srv.name),
-            }
-        }
+        let mcp = mcp_extras_cached(&app, &state);
         let permission = agent::PermissionMode::parse(
             &state
                 .get_setting("ai_permission_mode")
@@ -410,6 +511,7 @@ async fn agent_send(
         &client,
         &session_id,
         message.trim(),
+        &images,
         &turn_id,
         &on_event,
         &abort,
@@ -584,7 +686,7 @@ fn delete_ai_provider(state: State<'_, SqliteStorage>, name: String) -> Result<(
             let next = providers.first().cloned();
             let serialized = next
                 .as_ref()
-                .map(|p| serde_json::to_string(p))
+                .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| e.to_string())?
                 .unwrap_or_default();
@@ -803,9 +905,10 @@ fn list_mcp_servers(state: State<'_, SqliteStorage>) -> Result<Vec<McpServerConf
     Ok(load_mcp_servers(&state))
 }
 
-/// 新建/更新服务器配置（按 id upsert）。
+/// 新建/更新服务器配置（按 id upsert）；启用状态下立即后台刷新工具缓存。
 #[tauri::command]
 fn save_mcp_server(
+    app: tauri::AppHandle,
     mut server: McpServerConfig,
     state: State<'_, SqliteStorage>,
 ) -> Result<McpServerConfig, String> {
@@ -826,23 +929,33 @@ fn save_mcp_server(
         None => servers.push(server.clone()),
     }
     save_setting_value(&state, "ai_mcp_servers", &servers)?;
+    if server.enabled {
+        spawn_mcp_fetch(&app, server.clone());
+    }
     Ok(server)
 }
 
 #[tauri::command]
-fn delete_mcp_server(id: String, state: State<'_, SqliteStorage>) -> Result<(), String> {
+fn delete_mcp_server(
+    app: tauri::AppHandle,
+    id: String,
+    state: State<'_, SqliteStorage>,
+) -> Result<(), String> {
     let mut servers = load_mcp_servers(&state);
     let before = servers.len();
     servers.retain(|s| s.id != id);
     if servers.len() == before {
         return Err("服务器不存在".to_string());
     }
-    save_setting_value(&state, "ai_mcp_servers", &servers)
+    save_setting_value(&state, "ai_mcp_servers", &servers)?;
+    drop_mcp_cache_entry(&app, &id);
+    Ok(())
 }
 
-/// 总开关（聊天工具条快速启停）。
+/// 总开关（聊天工具条快速启停）：启用即预热工具缓存，停用即作废。
 #[tauri::command]
 fn set_mcp_enabled(
+    app: tauri::AppHandle,
     id: String,
     enabled: bool,
     state: State<'_, SqliteStorage>,
@@ -853,7 +966,14 @@ fn set_mcp_enabled(
         .find(|s| s.id == id)
         .ok_or("服务器不存在")?;
     slot.enabled = enabled;
-    save_setting_value(&state, "ai_mcp_servers", &servers)
+    let srv = slot.clone();
+    save_setting_value(&state, "ai_mcp_servers", &servers)?;
+    if enabled {
+        spawn_mcp_fetch(&app, srv);
+    } else {
+        drop_mcp_cache_entry(&app, &id);
+    }
+    Ok(())
 }
 
 /// 测试连接展示的工具详情（name / description / 入参 schema）。
@@ -1165,7 +1285,7 @@ struct SyncUi {
     error: Option<String>,
     /// 本次同步合并落地的记录/设置变更数（records+settings）。
     /// > 0 时前端刷新数据视图——纯推送（无远端变更）不触发重载，避免防抖推
-    /// 每次都 dataVersion++ 引发事件视图无谓重载。
+    /// > 每次都 dataVersion++ 引发事件视图无谓重载。
     applied: u32,
     /// 本次同步新合并落地的聊天消息数（仅真实新插入行；门控会话视图刷新）。
     messages_applied: u32,
@@ -1252,6 +1372,12 @@ async fn run_sync(app: tauri::AppHandle) {
             ui.applied =
                 (out.stats.records_applied + out.stats.settings_applied) as u32;
             ui.messages_applied = out.stats.messages_applied as u32;
+            // 设置落地可能更新 MCP 服务器配置：后台刷新工具缓存（不阻塞）。
+            if out.stats.settings_applied > 0 {
+                if let Some(state) = app.try_state::<SqliteStorage>() {
+                    refresh_mcp_cache(&app, &state);
+                }
+            }
         }
         Err(e) => {
             ui.phase = "error".into();
@@ -1712,7 +1838,7 @@ fn build_tray(app: &tauri::AppHandle) -> Result<(), String> {
         .cloned()
         .ok_or_else(|| "无默认窗口图标".to_string())?;
 
-    let mut tray = TrayIconBuilder::with_id("main")
+    let tray = TrayIconBuilder::with_id("main")
         .icon(icon)
         .tooltip("MOSH")
         .menu(&menu)
@@ -1833,6 +1959,12 @@ pub fn run() {
             app.manage(client);
             app.manage(WeatherCache::default());
             app.manage(AgentRuns::default());
+            app.manage(McpToolCache::default());
+            // MCP 工具缓存预热：启动即后台拉取（发送路径只读缓存，零网络等待）。
+            {
+                let state = app.state::<SqliteStorage>();
+                refresh_mcp_cache(app.handle(), &state);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1901,7 +2033,7 @@ pub fn run() {
                     return;
                 };
                 if mosh_core::sync::is_ready(&state) {
-                    let _ = tauri::async_runtime::block_on(async {
+                    tauri::async_runtime::block_on(async {
                         if let Ok(client) = sync_remote_of(&state) {
                             let _ = tokio::time::timeout(
                                 Duration::from_secs(3),

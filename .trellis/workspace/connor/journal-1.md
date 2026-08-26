@@ -73,3 +73,35 @@ implement.md 步骤 5–10 的全部前端工作并合入步骤 11 质量门：
 ### Status
 
 [OK] **Completed**
+
+## Session: AI 聊天图片上传 + 发送回复延迟修复
+
+**Date**: 2026-08-26
+**Task**: `08-26-chat-images-latency`
+**Branch**: main（工作区直接实现）
+
+### Summary
+
+TODO 两项：① 聊天支持图片——前端选图/粘贴/拖拽 + 本地压缩（1600px/JPEG/≤1.5MB/≤4张），
+`agent_send` 增 images 参数，`agent_messages` v7 加 images 列（同步随行携带，
+新旧版本 serde 双向兼容），ChatMessage 带图时组装 OpenAI vision content 数组
+（无图线格式不变），上下文仅回放最近 3 条带图消息防 token 膨胀。
+② 延迟根因是 agent_send 每条消息都对每台启用 MCP 服务器同步串行
+initialize+tools/list（单台最长 20s）拖住 LLM 首包——改为 McpToolCache 内存缓存：
+启动预热/配置变更/同步落地设置即后台刷新，发送路径只读缓存零网络等待
+（stale-while-revalidate；冷缓存本轮跳过）。前端补首包前三点「思考中」动画。
+顺带清 4 个存量 clippy 警告恢复 -D warnings 门。
+
+### 质量门
+
+`cargo test -p mosh-core`(133) / clippy(mosh-core + src-tauri windows-gnu
+`--all-targets -D warnings`) / `npm run check` / `npm run build` 全过。
+
+### 待办
+
+运行时 e2e（真机图片上传 + 慢 MCP 首包即时）需 glib≥2.70/Windows 平台跑
+`cargo tauri dev`，本机 glib 2.68.4 不足，与其他 GUI 任务同样留待运行时验证。
+
+### Status
+
+[OK] **Completed**
