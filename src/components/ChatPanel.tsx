@@ -269,6 +269,18 @@ export default function ChatPanel() {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages.length, messages.at(-1)?.text.length]);
 
+  // 全局拖拽兑底：拖到输入区之外时不让 WebView 导航到该文件（仅拦截默认行为，
+  // 输入区内的 onDrop 正常接管）。
+  useEffect(() => {
+    const swallow = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", swallow);
+    window.addEventListener("drop", swallow);
+    return () => {
+      window.removeEventListener("dragover", swallow);
+      window.removeEventListener("drop", swallow);
+    };
+  }, []);
+
   // 输入框自动增高：内容变化时重算高度（76px ~ 220px）。
   useEffect(() => {
     const ta = taRef.current;
