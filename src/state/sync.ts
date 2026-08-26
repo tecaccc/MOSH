@@ -23,7 +23,6 @@ import {
 } from "../lib/ipc";
 import { toast, useToastStore } from "./toast";
 import type { SyncConfigInfo, SyncConfigInput, SyncUi } from "../lib/types";
-import { useAgentStore } from "./agent";
 import { useProfileStore } from "./profile";
 import { useAppStore } from "./store";
 
@@ -52,7 +51,7 @@ interface SyncState {
 
 export const useSyncStore = create<SyncState>((set, get) => ({
   config: null,
-  ui: { phase: "idle", last_success_at: null, error: null, applied: 0, messages_applied: 0 },
+  ui: { phase: "idle", last_success_at: null, error: null, applied: 0 },
   generatedKey: null,
   busy: false,
 
@@ -84,7 +83,6 @@ export const useSyncStore = create<SyncState>((set, get) => ({
           void useAppStore.getState().refreshData();
           void useProfileStore.getState().load().catch(() => {});
         }
-        if (ui.messages_applied > 0) void useAgentStore.getState().reloadAfterSync();
       }
     });
     try {
@@ -97,7 +95,6 @@ export const useSyncStore = create<SyncState>((set, get) => ({
           void useAppStore.getState().refreshData();
           void useProfileStore.getState().load().catch(() => {});
         }
-        if (ui.messages_applied > 0) void useAgentStore.getState().reloadAfterSync();
       }
     } catch (e) {
       toast.error(`同步初始化失败：${e instanceof Error ? e.message : String(e)}`);

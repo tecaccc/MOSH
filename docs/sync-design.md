@@ -35,8 +35,10 @@ mosh-sync/                     ← bucket 内约定前缀
 ```
 
 - `device-id`：首次启用同步时本地生成的 UUID。
-- dump 内容：`records` 全量（含软删墓碑）+ `settings` 全量 + `agent_messages` 全量，
-  外层 JSON 带 `version` 字段（当前 `1`），为 v3 记录级增量留协议演进空间。
+- dump 内容：`records` 全量（含软删墓碑）+ `settings` 全量；外层 JSON 带 `version`
+  字段（当前 `1`），为 v3 记录级增量留协议演进空间。
+  （2026-08-26 起不再含 `agent_messages`——AI 会话历史改存进程内存，字段仅为
+  协议兼容保留恒为空，见 §3.3。）
 - 增量判断：对象存储端用 ETag/Last-Modified（HEAD 即可判断远端是否有变化）。
 
 ### 3.2 加密
@@ -64,25 +66,24 @@ mosh-sync/                     ← bucket 内约定前缀
 
 - **records**：按 `id` 对齐，LWW——`updated_at` 新者赢（`revision` 作 tie-breaker），
   旧的静默丢弃，无冲突 UI。
-- **agent_messages**：按 `id` 并集合并（append-only，天然无冲突）。2026-08-26 起行内
-  可携带 `images`（用户上传图片的 data URL JSON 数组，v7 列）：随行 JSON 序列化同步，
-  旧版本读新 dump 时忽略未知字段（无 `deny_unknown_fields`），新版本读旧 dump 时
-  `serde(default)` 回空。前端已压缩（长边 ≤1600px、JPEG、≤1.5MB、≤4 张/条）控制体积。
+- **agent_messages**（**2026-08-26 起下线**）：会话历史改存进程内存（重启即清空），
+  不再落库、不再同步。dump 的 `agent_messages`/`deleted_sessions` 字段恒为空、
+  仅为协议兼容保留：旧版本 App 读新 dump 需要键存在，新版本读旧 dump 时忽略
+  内容（不插入任何库表），协议版本仍为 1。历史方案（按 id 并集 + 会话墓碑）
+  的教训与设计考量见 git 历史。
 - **settings**：按键覆盖，晚写赢（以 dump 时间戳为准）。
 - **墓碑**：软删记录（`deleted_at` 非空）永久保留在同步流中，v1 不做 GC，
   天然保留“误删找回”余地。
-- **会话墓碑**（2026-08-20 补）：`agent_messages` 的并集合并无法传播删除——
-  一方删会话后，他机旧 dump 会把消息原样插回，会话复活。因此删除会话时在
-  `agent_session_tombstones` 表记墓碑（只增不删，同样并集合并）；合并时清理
-  本地该会话消息、且不再插入该会话的任何消息。会话 id 为每会话新生的 UUID，
-  不会重用撞墓碑。dump 新增 `deleted_sessions` 字段（`serde(default)`，旧客户端
-  双向兼容，协议版本仍为 1）。
-  补：本地写入同样受墓碑拦截——`append_agent_message` 对已删会话直接拒写
-  （返回未插入），删除会话时在途轮次的回复落地不再凭空重建会话。
+
+（会话墓碑机制随 agent_messages 同步一并下线；内存态会话的删除墓碑仅存进程内，
+拦截在途轮次的滞后写入复活已删会话，重启自然清空。）
 
 ### 3.4 同步范围
 
-**全部同步**：records（待办+日程）、settings（AI 提供商+API key、技能、MCP、城市……）、agent_messages。
+**全部同步**：records（待办+日程）、settings（AI 提供商+API key、技能、MCP、城市……）。
+
+**不同步**：AI 会话消息（2026-08-26 起纯内存态，重启即清空——聊天历史价值密度低、
+体积随使用无限增长且含隐私敏感内容，权衡后去掉持久化与同步；后续有更好方案再上）。
 
 **唯一例外（逻辑必然，非偏好）**：同步模块自身的配置（COS endpoint/region/bucket/AK/SK + 加密密钥）
 不可能通过同步到达——拉取云端数据之前就必须先有它们。每台设备手工配置一次。

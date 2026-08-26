@@ -13,7 +13,7 @@ use crate::agent::skills::{skills_prompt, SkillDef};
 use crate::agent::tools::{self, PermissionMode};
 use crate::error::CoreError;
 use crate::model::now_iso;
-use crate::storage::{AgentMessage, SqliteStorage};
+use crate::storage::{AgentMessage, MemoryAgentLog, SqliteStorage};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
@@ -82,14 +82,17 @@ impl ApprovalGate for AutoApprove {
     }
 }
 
-/// 驱动一轮对话：落 user 消息 → 循环调 LLM/工具 → 落 assistant 消息。
+/// 驱动一轮对话：user 消息入内存仓库 → 循环调 LLM/工具 → assistant 消息入仓。
+/// `db` 仅用于工具落库（待办/日程）；会话消息自 2026-08-26 起不落库（内存态）。
 ///
 /// `on_event` 同步回调（src-tauri 转发 Tauri 事件）；`abort` 由外部命令置位，
 /// 在每个 LLM 步与每个工具执行前检查——中断时已落库的操作保留（卡片可撤销）。
 ///
-/// 返回 `Err` 仅表示持久化故障等严重错误（此时 End{error} 也已发出）。
+/// 返回 `Err` 仅表示严重错误（此时 End{error} 也已发出）。
+#[allow(clippy::too_many_arguments)] // 与 run_turn_with 同构，签名即文档
 pub async fn run_turn<C: LlmClient>(
     db: &SqliteStorage,
+    log: &MemoryAgentLog,
     client: &C,
     session_id: &str,
     user_text: &str,
@@ -99,6 +102,7 @@ pub async fn run_turn<C: LlmClient>(
 ) -> Result<(), CoreError> {
     run_turn_with(
         db,
+        log,
         client,
         session_id,
         user_text,
@@ -113,10 +117,11 @@ pub async fn run_turn<C: LlmClient>(
 }
 
 /// [`run_turn`] 的增强版：附加 Skills 提示词、MCP 外部工具、审批闸门与图片附件。
-/// `user_images` 为本轮 user 消息携带的图片 data URL（落库并进上下文）。
+/// `user_images` 为本轮 user 消息携带的图片 data URL（入内存仓并进上下文）。
 #[allow(clippy::too_many_arguments)] // 与 run_turn 同构 + images/extras/gate，签名即文档
 pub async fn run_turn_with<C: LlmClient>(
     db: &SqliteStorage,
+    log: &MemoryAgentLog,
     client: &C,
     session_id: &str,
     user_text: &str,
@@ -141,8 +146,8 @@ pub async fn run_turn_with<C: LlmClient>(
         Ok(())
     };
 
-    // 1) user 消息（含图片附件）落库并进入上下文。
-    db.append_agent_message(&AgentMessage {
+    // 1) user 消息（含图片附件）入内存仓并进入上下文。
+    log.append(&AgentMessage {
         id: String::new(),
         session_id: session_id.to_string(),
         role: "user".into(),
@@ -154,7 +159,7 @@ pub async fn run_turn_with<C: LlmClient>(
         created_at: now_iso(),
     })?;
 
-    let mut messages = build_context(db, session_id, extras)?;
+    let mut messages = build_context(log, session_id, extras)?;
     let mut specs = tools::specs();
     specs.extend(extras.mcp_specs());
 
@@ -175,15 +180,15 @@ pub async fn run_turn_with<C: LlmClient>(
             Ok(r) => r,
             Err(e) => {
                 let msg = e.to_string();
-                persist_text(db, session_id, &format!("（出错了：{msg}）"))?;
+                persist_text(log, session_id, &format!("（出错了：{msg}）"))?;
                 return finish(EndReason::Error, Some(msg));
             }
         };
 
-        // 纯文本收尾：落库 + 结束。
+        // 纯文本收尾：入仓 + 结束。
         if reply.tool_calls.is_empty() {
             let text = reply.content.trim().to_string();
-            persist_text(db, session_id, &text)?;
+            persist_text(log, session_id, &text)?;
             return finish(EndReason::Done, None);
         }
 
@@ -212,9 +217,7 @@ pub async fn run_turn_with<C: LlmClient>(
             } else {
                 rejected_tool(session_id, turn_id, tc, &args)
             };
-            if let Err(e) = db.append_agent_message(&tool_msg) {
-                return finish(EndReason::Error, Some(e.to_string()));
-            }
+            log.append(&tool_msg)?;
             // 先落库后发事件：前端看到卡片时历史已可回放。
             on_event(event);
             messages.push(ChatMessage::tool(
@@ -225,7 +228,7 @@ pub async fn run_turn_with<C: LlmClient>(
     }
 
     let msg = format!("达到单轮工具调用步数上限（{MAX_STEPS}），已停止。");
-    persist_text(db, session_id, &msg)?;
+    persist_text(log, session_id, &msg)?;
     finish(EndReason::Error, Some(msg))
 }
 
@@ -288,7 +291,7 @@ async fn exec_tool(
     (event, row)
 }
 
-/// 用户拒绝审批的工具调用：回填 ok:false 结果（模型可见、可换方案），同样落库发卡片。
+/// 用户拒绝审批的工具调用：回填 ok:false 结果（模型可见、可换方案），同样入仓发卡片。
 fn rejected_tool(
     session_id: &str,
     turn_id: &str,
@@ -319,11 +322,11 @@ fn rejected_tool(
 
 /// 重建 LLM 上下文：system（含当前时间 + 启用技能）+ 历史 user/assistant 行（跳过 tool 行）。
 fn build_context(
-    db: &SqliteStorage,
+    log: &MemoryAgentLog,
     session_id: &str,
     extras: &TurnExtras,
 ) -> Result<Vec<ChatMessage>, CoreError> {
-    let history = db.list_agent_messages(session_id)?;
+    let history = log.list(session_id)?;
     // 带图行进入上下文的白名单：最近 CONTEXT_IMAGE_MESSAGES 条带图 user 行
     // （更早的图片不再重发，防多轮后 token/费用膨胀；UI 回看不受限）。
     let image_row_ids: Vec<&str> = history
@@ -380,8 +383,8 @@ fn system_prompt(skills: Option<&str>) -> String {
     p
 }
 
-fn persist_text(db: &SqliteStorage, session_id: &str, content: &str) -> Result<(), CoreError> {
-    db.append_agent_message(&AgentMessage {
+fn persist_text(log: &MemoryAgentLog, session_id: &str, content: &str) -> Result<(), CoreError> {
+    log.append(&AgentMessage {
         id: String::new(),
         session_id: session_id.to_string(),
         role: "assistant".into(),
@@ -476,13 +479,15 @@ mod tests {
     #[tokio::test]
     async fn plain_reply_persists_and_ends_done() {
         let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         let mock = MockLlm::new(vec![Reply {
             content: "你好，我能帮你安排待办与日程。".into(),
             tool_calls: vec![],
         }]);
-        let (log, on_event) = collector();
+        let (trace, on_event) = collector();
         run_turn(
             &db,
+            &log,
             &mock,
             "s1",
             "你好",
@@ -492,11 +497,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let log = log.lock().unwrap();
-        assert_eq!(log.first().unwrap(), "start");
-        assert_eq!(log.last().unwrap(), "end:Done");
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.first().unwrap(), "start");
+        assert_eq!(trace.last().unwrap(), "end:Done");
         // user + assistant 两行。
-        let msgs = db.list_agent_messages("s1").unwrap();
+        let msgs = log.list("s1").unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1].role, "assistant");
     }
@@ -504,6 +509,7 @@ mod tests {
     #[tokio::test]
     async fn tool_call_creates_and_feeds_back() {
         let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         // 脚本按 pop 顺序：最后 push 的是第一次 chat 返回。
         let mock = MockLlm::new(vec![
             Reply {
@@ -519,9 +525,10 @@ mod tests {
                 )],
             },
         ]);
-        let (log, on_event) = collector();
+        let (trace, on_event) = collector();
         run_turn(
             &db,
+            &log,
             &mock,
             "s1",
             "建个待办：交季度报告",
@@ -532,10 +539,10 @@ mod tests {
         .await
         .unwrap();
 
-        let log = log.lock().unwrap();
-        assert!(log.contains(&"tool:create_todo:ok=true".to_string()));
-        assert_eq!(log.last().unwrap(), "end:Done");
-        drop(log);
+        let trace = trace.lock().unwrap();
+        assert!(trace.contains(&"tool:create_todo:ok=true".to_string()));
+        assert_eq!(trace.last().unwrap(), "end:Done");
+        drop(trace);
 
         // 工具结果回填给模型（含 ok:true 与新记录 id）。
         let saw = mock.saw_tool_results.lock().unwrap()[0].clone();
@@ -549,7 +556,7 @@ mod tests {
         assert_eq!(todos.len(), 1);
         assert_eq!(todos[0].title, "交季度报告");
         // 持久化行：user + tool + assistant = 3。
-        let msgs = db.list_agent_messages("s1").unwrap();
+        let msgs = log.list("s1").unwrap();
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[1].role, "tool");
     }
@@ -557,6 +564,7 @@ mod tests {
     #[tokio::test]
     async fn tool_failure_feeds_error_not_abort() {
         let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         let mock = MockLlm::new(vec![
             Reply {
                 content: "没找到这条待办。".into(),
@@ -571,9 +579,10 @@ mod tests {
                 )],
             },
         ]);
-        let (log, on_event) = collector();
+        let (trace, on_event) = collector();
         run_turn(
             &db,
+            &log,
             &mock,
             "s1",
             "完成那条",
@@ -584,36 +593,39 @@ mod tests {
         .await
         .unwrap();
         // 失败转 ok:false 回填，回合照常 Done。
-        let log = log.lock().unwrap();
-        assert!(log.contains(&"tool:set_todo_status:ok=false".to_string()));
-        assert_eq!(log.last().unwrap(), "end:Done");
+        let trace = trace.lock().unwrap();
+        assert!(trace.contains(&"tool:set_todo_status:ok=false".to_string()));
+        assert_eq!(trace.last().unwrap(), "end:Done");
     }
 
     #[tokio::test]
     async fn abort_stops_before_first_step() {
         let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         let mock = MockLlm::new(vec![]);
-        let (log, on_event) = collector();
+        let (trace, on_event) = collector();
         let abort = AtomicBool::new(true);
-        run_turn(&db, &mock, "s1", "算了", "t1", &on_event, &abort)
+        run_turn(&db, &log, &mock, "s1", "算了", "t1", &on_event, &abort)
             .await
             .unwrap();
-        let log = log.lock().unwrap();
-        assert_eq!(log.last().unwrap(), "end:Aborted");
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.last().unwrap(), "end:Aborted");
     }
 
     #[tokio::test]
     async fn step_limit_ends_error() {
         let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         // 每步都要求工具调用 → 触发上限。
         let endless = Reply {
             content: String::new(),
             tool_calls: vec![tc("cx", "list_todos", json!({}))],
         };
         let mock = MockLlm::new(vec![endless; MAX_STEPS + 2]);
-        let (log, on_event) = collector();
+        let (trace, on_event) = collector();
         run_turn(
             &db,
+            &log,
             &mock,
             "s1",
             "刷",
@@ -623,9 +635,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let log = log.lock().unwrap();
-        assert!(log.last().unwrap().starts_with("end:Error"));
-        let tool_count = log.iter().filter(|l| l.starts_with("tool:")).count();
+        let trace = trace.lock().unwrap();
+        assert!(trace.last().unwrap().starts_with("end:Error"));
+        let tool_count = trace.iter().filter(|l| l.starts_with("tool:")).count();
         assert_eq!(tool_count, MAX_STEPS);
     }
 
@@ -639,9 +651,9 @@ mod tests {
 
     #[test]
     fn build_context_skips_tool_rows() {
-        let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         for (role, content) in [("user", "q1"), ("tool", "{}"), ("assistant", "a1")] {
-            db.append_agent_message(&AgentMessage {
+            log.append(&AgentMessage {
                 id: String::new(),
                 session_id: "s".into(),
                 role: role.into(),
@@ -654,7 +666,7 @@ mod tests {
             })
             .unwrap();
         }
-        let ctx = build_context(&db, "s", &TurnExtras::default()).unwrap();
+        let ctx = build_context(&log, "s", &TurnExtras::default()).unwrap();
         assert_eq!(ctx.len(), 3); // system + user + assistant
         assert_eq!(ctx[0].role, "system");
         assert_eq!(ctx[1].content.as_deref(), Some("q1"));
@@ -663,10 +675,10 @@ mod tests {
 
     #[test]
     fn build_context_includes_recent_images_only() {
-        let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         // 4 条带图 user 消息（显式 id 保证顺序）：仅最近 3 条的图片进上下文。
         for i in 0..4 {
-            db.append_agent_message(&AgentMessage {
+            log.append(&AgentMessage {
                 id: format!("u{i}"),
                 session_id: "s".into(),
                 role: "user".into(),
@@ -679,7 +691,7 @@ mod tests {
             })
             .unwrap();
         }
-        let ctx = build_context(&db, "s", &TurnExtras::default()).unwrap();
+        let ctx = build_context(&log, "s", &TurnExtras::default()).unwrap();
         let users: Vec<&ChatMessage> = ctx.iter().filter(|m| m.role == "user").collect();
         assert_eq!(users.len(), 4);
         assert!(users[0].images.is_empty(), "最早的带图消息不重发图片");
@@ -692,6 +704,7 @@ mod tests {
     #[tokio::test]
     async fn user_images_persisted_with_message() {
         let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         let mock = MockLlm::new(vec![Reply {
             content: "看到了".into(),
             tool_calls: vec![],
@@ -699,6 +712,7 @@ mod tests {
         let (_log, on_event) = collector();
         run_turn_with(
             &db,
+            &log,
             &mock,
             "s1",
             "看这张图",
@@ -711,7 +725,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let msgs = db.list_agent_messages("s1").unwrap();
+        let msgs = log.list("s1").unwrap();
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[0].images, vec!["data:image/png;base64,AA".to_string()]);
         assert!(msgs[1].images.is_empty(), "assistant 行不带图");
@@ -719,7 +733,7 @@ mod tests {
 
     #[test]
     fn build_context_appends_skills_prompt() {
-        let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         let extras = TurnExtras {
             skills: vec![crate::agent::skills::SkillDef {
                 id: "planner".into(),
@@ -731,13 +745,13 @@ mod tests {
             mcp: vec![],
             ..Default::default()
         };
-        let ctx = build_context(&db, "s", &extras).unwrap();
+        let ctx = build_context(&log, "s", &extras).unwrap();
         let sys = ctx[0].content.as_deref().unwrap();
         assert!(sys.contains("技能已启用"));
         assert!(sys.contains("日程规划师"));
         assert!(sys.contains("拆解目标并落成日程"));
         // 无技能时不追加。
-        let plain = build_context(&db, "s", &TurnExtras::default()).unwrap();
+        let plain = build_context(&log, "s", &TurnExtras::default()).unwrap();
         assert!(!plain[0].content.as_deref().unwrap().contains("技能已启用"));
     }
 
@@ -767,6 +781,7 @@ mod tests {
     async fn mcp_tool_not_in_servers_feeds_error() {
         // 模型调用未启用的 MCP 工具 → ok:false 回填（不中断回合）。
         let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         let mock = MockLlm::new(vec![
             Reply {
                 content: "该外部工具不可用。".into(),
@@ -777,9 +792,10 @@ mod tests {
                 tool_calls: vec![tc("c1", "mcp__ghost__search", json!({"q": "x"}))],
             },
         ]);
-        let (log, on_event) = collector();
+        let (trace, on_event) = collector();
         run_turn_with(
             &db,
+            &log,
             &mock,
             "s1",
             "搜一下",
@@ -792,9 +808,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let log = log.lock().unwrap();
-        assert!(log.contains(&"tool:mcp__ghost__search:ok=false".to_string()));
-        assert_eq!(log.last().unwrap(), "end:Done");
+        let trace = trace.lock().unwrap();
+        assert!(trace.contains(&"tool:mcp__ghost__search:ok=false".to_string()));
+        assert_eq!(trace.last().unwrap(), "end:Done");
     }
 
     /// 恒拒绝闸门（审批测试用）。
@@ -816,6 +832,7 @@ mod tests {
         // 全部审批模式下拒绝 create_todo：先发 ApprovalRequired，再回填 ok:false，
         // 工具不真实落库，回合照常 Done。
         let db = SqliteStorage::open_in_memory().unwrap();
+        let log = MemoryAgentLog::default();
         let mock = MockLlm::new(vec![
             Reply {
                 content: "好的，已取消创建。".into(),
@@ -826,13 +843,14 @@ mod tests {
                 tool_calls: vec![tc("c1", "create_todo", json!({"title": "x"}))],
             },
         ]);
-        let (log, on_event) = collector();
+        let (trace, on_event) = collector();
         let extras = TurnExtras {
             permission: crate::agent::tools::PermissionMode::All,
             ..Default::default()
         };
         run_turn_with(
             &db,
+            &log,
             &mock,
             "s1",
             "建个待办",
@@ -845,11 +863,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let log = log.lock().unwrap();
-        assert!(log.contains(&"approval:create_todo".to_string()));
-        assert!(log.contains(&"tool:create_todo:ok=false".to_string()));
-        assert_eq!(log.last().unwrap(), "end:Done");
-        drop(log);
+        let trace = trace.lock().unwrap();
+        assert!(trace.contains(&"approval:create_todo".to_string()));
+        assert!(trace.contains(&"tool:create_todo:ok=false".to_string()));
+        assert_eq!(trace.last().unwrap(), "end:Done");
+        drop(trace);
         // 拒绝 → 未真实创建。
         let todos = service::list_todos(&db, Default::default()).unwrap();
         assert!(todos.is_empty());

@@ -224,14 +224,12 @@ export interface SyncUi {
   error: string | null;
   /** 本次同步合并落地的记录/设置变更数；> 0 时刷新数据视图。 */
   applied: number;
-  /** 本次同步新合并落地的聊天消息数；> 0 时刷新会话视图。 */
-  messages_applied: number;
 }
 
 /** 一次同步的结果统计。 */
 export interface SyncOutcome {
   remote_dumps: number;
-  stats: { records_applied: number; settings_applied: number; messages_applied: number };
+  stats: { records_applied: number; settings_applied: number };
   pushed: boolean;
 }
 

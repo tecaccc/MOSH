@@ -353,7 +353,7 @@ export default function ChatPanel() {
           ) : null}
           {activeSkills > 0 ? <span className={styles["head-chip"]}>技能 {activeSkills}</span> : null}
           {enabledMcp > 0 ? <span className={styles["head-chip"]}>MCP {enabledMcp}</span> : null}
-          <span className={styles["head-hint"]}>会话历史开关在右上窗口按钮旁</span>
+          <span className={styles["head-hint"]}>会话列表开关在右上窗口按钮旁</span>
         </div>
 
         {configured === false ? (
@@ -595,7 +595,7 @@ export default function ChatPanel() {
       {chatSideVisible ? (
         <aside className={styles.side}>
           <button type="button" className={styles.new} onClick={newSession}>+ 新会话</button>
-          <div className={styles["sess-label"]}>历史会话</div>
+          <div className={styles["sess-label"]} title="会话仅保存在内存中，重启应用后清空">会话（重启清空）</div>
           <div className={styles["sess-list"]}>
             {sessions.map((s) => (
               <div
@@ -625,7 +625,7 @@ export default function ChatPanel() {
               </div>
             ))}
             {sessions.length === 0 ? (
-              <div className={styles["sess-empty"]}>暂无历史会话</div>
+              <div className={styles["sess-empty"]}>暂无会话</div>
             ) : null}
           </div>
         </aside>

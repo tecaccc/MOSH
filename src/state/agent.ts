@@ -2,7 +2,8 @@
  * Agent 聊天状态（zustand；原 agent.svelte.ts 迁移）。
  *
  * 事件监听在 initAgent() 注册一次（ChatPanel useEffect 调用；幂等）。
- * UI 消息模型在持久化行之上叠加流式气泡状态；会话切换时从 DB 重放。
+ * UI 消息模型在内存消息行之上叠加流式气泡状态；会话切换时从内存仓库重放。
+ * 2026-08-26 起历史不再落库/同步：全部会话消息存进程内存，重启即清空。
  */
 
 import { listen } from "@tauri-apps/api/event";
@@ -112,8 +113,6 @@ interface AgentState {
 
   init(): Promise<void>;
   refreshSessions(): Promise<void>;
-  /** 同步落地他机消息后刷新：会话列表必刷；空闲且当前会话已持久化时重放其消息。 */
-  reloadAfterSync(): Promise<void>;
   newSession(): void;
   openSession(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
@@ -307,17 +306,6 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     }
   },
 
-  /** 同步合并落地他机的聊天消息后：刷新会话侧栏（新会话/计数）；
-   * 空闲且当前会话已持久化时重放其消息（在途流式/新建未发送会话不覆盖）。 */
-  reloadAfterSync: async () => {
-    await get().refreshSessions();
-    if (get().streaming) return; // 流式中不重放（轮次结束/切换会话时自然看到）
-    const cur = get().currentSession;
-    if (cur && get().sessions.some((s) => s.session_id === cur)) {
-      await get().openSession(cur);
-    }
-  },
-
   /** 拉取技能与 MCP 服务器（静默失败，非 Tauri 环境忽略）。 */
   loadChatTools: async () => {
     try {
@@ -374,7 +362,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     }
   },
 
-  /** 打开历史会话（DB 重放，含图片附件）。 */
+  /** 打开会话（内存重放，含图片附件；重启后为空）。 */
   openSession: async (id) => {
     streamingKey = null;
     set({ currentSession: id });

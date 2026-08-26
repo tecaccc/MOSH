@@ -5,6 +5,7 @@ use crate::model::{Kind, Record, RecordFilter, Status};
 use rusqlite::{params, Connection};
 use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -45,14 +46,120 @@ pub struct AgentSessionSummary {
     pub message_count: i64,
 }
 
-/// 已删除会话的墓碑（`agent_session_tombstones` 表）：消息本身是 append-only
-/// 并集合并，删除动作无法经消息传播——墓碑集合同为只增并集，同步时以此压制
-/// 他机旧 dump 里的会话消息（会话 id 为每会话新生的 UUID，不会重用撞墓碑）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionTombstone {
-    pub session_id: String,
-    /// 首次删除时间（ISO8601；仅诊断用，合并取并集不比较时间）。
-    pub deleted_at: String,
+/// 进程内 Agent 会话消息仓库（2026-08-26 起：历史不再落库，重启即清空）。
+///
+/// 背景：聊天历史落库价值有限（隐私敏感、体积随使用无限增长、跨设备同步
+/// 意义不大），改为纯内存态。语义对齐旧 SQLite 实现：
+/// - 追加时 id 为空则生成 UUIDv7；
+/// - 删除会话记**内存墓碑**，在途轮次的滞后写入（如删除后落地的回复）
+///   不得复活会话（与旧 `agent_session_tombstones` 同语义）；
+/// - 会话摘要：标题取首条 user 消息截 24 字符，最近活跃在前。
+///
+/// 不参与多设备同步（dump 的 `agent_messages` 字段恒为空，见 sync::dump）。
+#[derive(Default)]
+pub struct MemoryAgentLog {
+    /// session_id → 消息（追加序）。
+    sessions: Mutex<HashMap<String, Vec<AgentMessage>>>,
+    /// 已删会话集合（拒后续写入）。
+    deleted: Mutex<HashSet<String>>,
+}
+
+impl MemoryAgentLog {
+    /// 追加一条消息。`false` = 会话已删（墓碑拒写，与旧库同语义）。
+    pub fn append(&self, msg: &AgentMessage) -> Result<bool, CoreError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| CoreError::Db("memory log lock poisoned".into()))?;
+        if self.is_tombstoned(&msg.session_id)? {
+            return Ok(false);
+        }
+        let mut m = msg.clone();
+        if m.id.is_empty() {
+            m.id = crate::model::new_id();
+        }
+        sessions.entry(msg.session_id.clone()).or_default().push(m);
+        Ok(true)
+    }
+
+    /// 某会话全部消息（追加序 clone；无会话 → 空）。
+    pub fn list(&self, session_id: &str) -> Result<Vec<AgentMessage>, CoreError> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| CoreError::Db("memory log lock poisoned".into()))?;
+        Ok(sessions.get(session_id).cloned().unwrap_or_default())
+    }
+
+    /// 会话摘要（最近活跃在前）：标题取首条 user 消息截 24 字符，无则「新会话」。
+    pub fn list_sessions(&self) -> Result<Vec<AgentSessionSummary>, CoreError> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| CoreError::Db("memory log lock poisoned".into()))?;
+        let mut out: Vec<AgentSessionSummary> = sessions
+            .iter()
+            .map(|(sid, msgs)| AgentSessionSummary {
+                session_id: sid.clone(),
+                title: msgs
+                    .iter()
+                    .find(|m| m.role == "user")
+                    .map(|m| truncate_title(&m.content))
+                    .unwrap_or_else(|| "新会话".to_string()),
+                message_count: msgs.len() as i64,
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            // 活跃度：同会话内 created_at 非降序，取末条比较；再按 session_id 稳定序。
+            let la = sessions
+                .get(&a.session_id)
+                .and_then(|v| v.last())
+                .map(|m| m.created_at.as_str())
+                .unwrap_or("");
+            let lb = sessions
+                .get(&b.session_id)
+                .and_then(|v| v.last())
+                .map(|m| m.created_at.as_str())
+                .unwrap_or("");
+            lb.cmp(la).then_with(|| a.session_id.cmp(&b.session_id))
+        });
+        Ok(out)
+    }
+
+    /// 删除整个会话并记墓碑（后续写入拒收）。返回删除的消息数。
+    pub fn delete_session(&self, session_id: &str) -> Result<usize, CoreError> {
+        let mut deleted = self
+            .deleted
+            .lock()
+            .map_err(|_| CoreError::Db("memory log lock poisoned".into()))?;
+        deleted.insert(session_id.to_string());
+        drop(deleted);
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| CoreError::Db("memory log lock poisoned".into()))?;
+        Ok(sessions.remove(session_id).map(|v| v.len()).unwrap_or(0))
+    }
+
+    /// 会话是否已删（墓碑）。
+    fn is_tombstoned(&self, session_id: &str) -> Result<bool, CoreError> {
+        let deleted = self
+            .deleted
+            .lock()
+            .map_err(|_| CoreError::Db("memory log lock poisoned".into()))?;
+        Ok(deleted.contains(session_id))
+    }
+}
+
+/// 会话标题：去首尾空白后截 24 字符，超长补省略号（对齐旧 SQL 版语义）。
+fn truncate_title(s: &str) -> String {
+    let t = s.trim();
+    let cut: String = t.chars().take(24).collect();
+    if t.chars().count() > 24 {
+        format!("{cut}…")
+    } else {
+        cut
+    }
 }
 
 /// settings 全量行（同步 dump / 合并用）。
@@ -148,6 +255,14 @@ fn migrations() -> Migrations<'static> {
         // v7：agent_messages 加 images——user 消息的图片附件（data URL JSON 数组；
         // NULL = 无图）。图片进 LLM 上下文与同步 dump/merge（随 AgentMessage serde）。
         M::up("ALTER TABLE agent_messages ADD COLUMN images TEXT;"),
+        // v8：AI 会话历史去持久化——消息改存进程内存（重启即清空），
+        // 不再落库/同步；旧表连同会话墓碑一并 DROP（存量聊天记录波奔）。
+        M::up(
+            r#"
+        DROP TABLE agent_messages;
+        DROP TABLE agent_session_tombstones;
+        "#,
+        ),
     ])
 }
 
@@ -404,177 +519,6 @@ impl SqliteStorage {
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
-
-    // —— Agent 会话消息（见 agent 模块 design §3）——
-
-    /// 追加一条会话消息（user/assistant/tool）。`id` 为空时自动生成 UUIDv7；
-    /// 显式 id 用于同步合并回放（同 id 已存在则忽略，append-only 并集语义）。
-    /// 返回 `true` = 新插入；`false` = 已存在被忽略（同步幂等重放）或会话已删
-    /// （墓碑拒写：删除后到达的滞后写入——如在途轮次的回复落地——不得让会话复活）。
-    pub fn append_agent_message(&self, msg: &AgentMessage) -> Result<bool, CoreError> {
-        let conn = self.lock()?;
-        // 墓碑检查与插入同一锁内：先查后插的窗口期里并发删除会凭空复活会话。
-        {
-            let mut stmt = conn
-                .prepare("SELECT 1 FROM agent_session_tombstones WHERE session_id = ?1")?;
-            if stmt.exists(params![msg.session_id])? {
-                return Ok(false);
-            }
-        }
-        mark_dirty();
-        let id = if msg.id.is_empty() {
-            crate::model::new_id()
-        } else {
-            msg.id.clone()
-        };
-        let images_json = if msg.images.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(&msg.images)?)
-        };
-        let n = conn.execute(
-            "INSERT INTO agent_messages
-             (id, session_id, role, content, tool_name, tool_args, tool_result, images, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(id) DO NOTHING",
-            params![
-                id,
-                msg.session_id,
-                msg.role,
-                msg.content,
-                msg.tool_name,
-                msg.tool_args,
-                msg.tool_result,
-                images_json,
-                msg.created_at
-            ],
-        )?;
-        Ok(n > 0)
-    }
-
-    /// 全部会话消息（跨会话，同步 dump 用），按 created_at 升序。
-    pub fn list_all_agent_messages(&self) -> Result<Vec<AgentMessage>, CoreError> {
-        let conn = self.lock()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, images, created_at
-             FROM agent_messages ORDER BY created_at ASC, id ASC",
-        )?;
-        let rows = stmt.query_map([], row_to_agent_message)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
-    }
-
-    /// 按会话取全部消息（按创建时间升序；同秒内按 id，UUIDv7 保字典序近似时序）。
-    pub fn list_agent_messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, CoreError> {
-        let conn = self.lock()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, tool_name, tool_args, tool_result, images, created_at
-             FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC, id ASC",
-        )?;
-        let rows = stmt.query_map(params![session_id], row_to_agent_message)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
-    }
-
-    /// 删除整个会话（全部消息行）并记墓碑（同步压制他机旧 dump 复活）；返回删除行数。
-    pub fn delete_agent_session(&self, session_id: &str) -> Result<usize, CoreError> {
-        mark_dirty();
-        let conn = self.lock()?;
-        let n = conn.execute(
-            "DELETE FROM agent_messages WHERE session_id = ?1",
-            params![session_id],
-        )?;
-        conn.execute(
-            "INSERT INTO agent_session_tombstones (session_id, deleted_at) VALUES (?1, ?2)
-             ON CONFLICT(session_id) DO NOTHING",
-            params![session_id, crate::model::now_iso()],
-        )?;
-        Ok(n)
-    }
-
-    /// 全部会话墓碑（dump 上行/回显用）。
-    pub fn list_session_tombstones(&self) -> Result<Vec<SessionTombstone>, CoreError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT session_id, deleted_at FROM agent_session_tombstones")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(SessionTombstone {
-                session_id: row.get(0)?,
-                deleted_at: row.get(1)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
-    }
-
-    /// 会话是否已删（合并时过滤该会话消息用）。
-    pub fn session_tombstoned(&self, session_id: &str) -> Result<bool, CoreError> {
-        let conn = self.lock()?;
-        let mut stmt = conn.prepare(
-            "SELECT 1 FROM agent_session_tombstones WHERE session_id = ?1",
-        )?;
-        let exists = stmt.exists(params![session_id])?;
-        Ok(exists)
-    }
-
-    /// 并集合并远端墓碑：首见则入库，并清掉本地残留的该会话消息（设备尚未拉到
-    /// 墓碑时他机 dump 可能已先把消息插回）。返回清理的本地消息行数（作为
-    /// messages_applied 计入统计——删除也是需要刷新 UI 的消息变更）。
-    pub fn apply_session_tombstones(
-        &self,
-        tombs: &[SessionTombstone],
-    ) -> Result<usize, CoreError> {
-        if tombs.is_empty() {
-            return Ok(0);
-        }
-        mark_dirty();
-        let conn = self.lock()?;
-        let mut cleaned = 0usize;
-        for t in tombs {
-            conn.execute(
-                "INSERT INTO agent_session_tombstones (session_id, deleted_at) VALUES (?1, ?2)
-                 ON CONFLICT(session_id) DO NOTHING",
-                params![t.session_id, t.deleted_at],
-            )?;
-            cleaned += conn.execute(
-                "DELETE FROM agent_messages WHERE session_id = ?1",
-                params![t.session_id],
-            )?;
-        }
-        Ok(cleaned)
-    }
-
-    /// 会话摘要（最近活跃在前）。标题取首条 user 消息截断。
-    /// 活跃度按 created_at（id 已非自增整数，`legacy-` 前缀破坏字典序）。
-    pub fn list_agent_sessions(&self) -> Result<Vec<AgentSessionSummary>, CoreError> {
-        let conn = self.lock()?;
-        let mut stmt = conn.prepare(
-            "SELECT session_id,
-                    (SELECT content FROM agent_messages m2
-                      WHERE m2.session_id = m.session_id AND m2.role = 'user'
-                      ORDER BY m2.created_at ASC, m2.id ASC LIMIT 1) AS first_user,
-                    COUNT(*) AS n,
-                    MAX(created_at) AS last_at
-             FROM agent_messages m GROUP BY session_id ORDER BY last_at DESC, session_id ASC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let first: Option<String> = row.get(1)?;
-            let n: i64 = row.get(2)?;
-            Ok(AgentSessionSummary {
-                session_id: row.get(0)?,
-                title: first
-                    .map(|s| {
-                        let t = s.trim();
-                        let cut: String = t.chars().take(24).collect();
-                        if t.chars().count() > 24 {
-                            format!("{cut}…")
-                        } else {
-                            cut
-                        }
-                    })
-                    .unwrap_or_else(|| "新会话".to_string()),
-                message_count: n,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
-    }
 }
 
 fn kind_to_str(k: Kind) -> &'static str {
@@ -609,24 +553,6 @@ fn str_to_status(s: &str) -> Result<Status, CoreError> {
     }
 }
 
-/// 从行映射为 `AgentMessage`（列序与查询保持一致）。
-fn row_to_agent_message(row: &rusqlite::Row<'_>) -> Result<AgentMessage, rusqlite::Error> {
-    Ok(AgentMessage {
-        id: row.get(0)?,
-        session_id: row.get(1)?,
-        role: row.get(2)?,
-        content: row.get(3)?,
-        tool_name: row.get(4)?,
-        tool_args: row.get(5)?,
-        tool_result: row.get(6)?,
-        // NULL / 损坏 JSON → 空（旧库升级行无此列值）。
-        images: row
-            .get::<_, Option<String>>(7)?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default(),
-        created_at: row.get(8)?,
-    })
-}
 
 /// 从行映射为 `Record`。`tags`/`data` 以 JSON 文本存储，读时反序列化。
 fn row_to_record(row: &rusqlite::Row<'_>) -> Result<Record, CoreError> {
@@ -934,116 +860,6 @@ mod tests {
         );
     }
 
-    fn agent_msg(session: &str, role: &str, content: &str) -> AgentMessage {
-        AgentMessage {
-            id: String::new(),
-            session_id: session.to_string(),
-            role: role.to_string(),
-            content: content.to_string(),
-            tool_name: None,
-            tool_args: None,
-            tool_result: None,
-            created_at: crate::model::now_iso(),
-                images: vec![],
-            }
-    }
-
-    #[test]
-    fn agent_messages_append_list_and_sessions() {
-        let db = SqliteStorage::open_in_memory().unwrap();
-        db.append_agent_message(&agent_msg("s1", "user", "明早十点开周会"))
-            .unwrap();
-        db.append_agent_message(&agent_msg("s1", "assistant", "已创建日程"))
-            .unwrap();
-        db.append_agent_message(&agent_msg(
-            "s2",
-            "user",
-            "另一个会话的第一句话很长很长很长需要被截断处理才行",
-        ))
-        .unwrap();
-
-        // 按会话取出且升序。
-        let msgs = db.list_agent_messages("s1").unwrap();
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].role, "user");
-        assert_eq!(msgs[1].content, "已创建日程");
-        // 无图消息 → 空 images（v7 列存在且往返一致）。
-        assert!(msgs[0].images.is_empty());
-
-        // 摘要：最近活跃在前，标题取首条 user 截断。
-        let sessions = db.list_agent_sessions().unwrap();
-        assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].session_id, "s2");
-        assert!(sessions[0].title.ends_with("…"));
-        assert_eq!(sessions[0].message_count, 1);
-        assert_eq!(sessions[1].title, "明早十点开周会");
-    }
-
-    #[test]
-    fn agent_message_images_roundtrip() {
-        // v7：图片 data URL 数组随消息存取（JSON 文本）；同步显式 id 重放同样携带。
-        let db = SqliteStorage::open_in_memory().unwrap();
-        let mut msg = agent_msg("s1", "user", "看这张图");
-        msg.id = "img-1".to_string(); // 显式 id：同步重放幂等语义的前提
-        msg.images = vec![
-            "data:image/jpeg;base64,AAA".to_string(),
-            "data:image/png;base64,BBB".to_string(),
-        ];
-        db.append_agent_message(&msg).unwrap();
-        let back = &db.list_agent_messages("s1").unwrap()[0];
-        assert_eq!(back.images, msg.images);
-
-        // 同步重放：显式 id + 同 images 幂等（已存在 → 忽略，不重复不丢图）。
-        db.append_agent_message(&msg).unwrap();
-        assert_eq!(db.list_agent_messages("s1").unwrap().len(), 1);
-    }
-
-    #[test]
-    fn delete_agent_session_removes_only_target() {
-        let db = SqliteStorage::open_in_memory().unwrap();
-        db.append_agent_message(&agent_msg("s1", "user", "a"))
-            .unwrap();
-        db.append_agent_message(&agent_msg("s1", "assistant", "b"))
-            .unwrap();
-        db.append_agent_message(&agent_msg("s2", "user", "c"))
-            .unwrap();
-
-        let n = db.delete_agent_session("s1").unwrap();
-        assert_eq!(n, 2);
-        assert!(db.list_agent_messages("s1").unwrap().is_empty());
-        // 其他会话不受影响。
-        assert_eq!(db.list_agent_messages("s2").unwrap().len(), 1);
-        let sessions = db.list_agent_sessions().unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, "s2");
-
-        // 重复删除 → 0 行，不报错。
-        assert_eq!(db.delete_agent_session("s1").unwrap(), 0);
-
-        // 删除记墓碑（同步压制复活）；重复删除不重复记。
-        assert!(db.session_tombstoned("s1").unwrap());
-        assert!(!db.session_tombstoned("s2").unwrap());
-        assert_eq!(db.list_session_tombstones().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn append_to_tombstoned_session_is_rejected() {
-        // BUG：删除会话后，在途轮次的回复（或任何滞后写入）落地会让会话凭空复活。
-        // 墓碑拒写：append 对已删会话返回 false 且不插入。
-        let db = SqliteStorage::open_in_memory().unwrap();
-        db.append_agent_message(&agent_msg("s1", "user", "你好"))
-            .unwrap();
-        db.delete_agent_session("s1").unwrap();
-
-        let inserted = db
-            .append_agent_message(&agent_msg("s1", "assistant", "迟到的回复"))
-            .unwrap();
-        assert!(!inserted);
-        assert!(db.list_agent_messages("s1").unwrap().is_empty());
-        assert!(db.list_agent_sessions().unwrap().is_empty());
-        // 未删会话不受影响。
-        assert!(db.append_agent_message(&agent_msg("s2", "user", "x")).unwrap());
-    }
 
     #[test]
     fn open_disk_file_runs_migrations() {
@@ -1088,7 +904,8 @@ mod tests {
     }
 
     /// 旧 schema（v3：自增 id 的 agent_messages、无 updated_at 的 settings）升级到当前版本：
-    /// 旧消息保留且加 legacy- 前缀；settings 数据保留，updated_at 视为最早。
+    /// v8 起 agent_messages/墓碑表被 DROP（历史去持久化，存量聊天记录波奔）；
+    /// settings 数据保留，updated_at 视为最早。
     #[test]
     fn upgrades_v3_database_in_place() {
         let dir = tempfile_dir();
@@ -1119,12 +936,9 @@ mod tests {
             )
             .unwrap();
         }
-        // 重新打开：自动跑到最新迁移。
+        // 重新打开：自动跑到最新迁移。settings 保留；agent_messages 已被 v8 DROP
+        // （历史去持久化——存量聊天记录波奔，预期行为）。
         let db = SqliteStorage::open(&path).unwrap();
-        let msgs = db.list_agent_messages("s1").unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].id.starts_with("legacy-"));
-        assert_eq!(msgs[0].content, "旧消息");
         let rows = db.list_settings().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].key, "weather");
@@ -1138,9 +952,88 @@ mod tests {
             .find(|r| r.key == "k")
             .unwrap();
         assert!(!row.updated_at.is_empty());
-        // 旧 id 与新 UUID 不撞：再追加一条，两条共存。
-        db.append_agent_message(&agent_msg("s1", "user", "新消息"))
+        // 表确已不在（v8 DROP 生效）。
+        let conn = Connection::open(&path).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('agent_messages','agent_session_tombstones')",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(db.list_agent_messages("s1").unwrap().len(), 2);
+        assert_eq!(n, 0);
+    }
+
+    // —— MemoryAgentLog（进程内会话消息仓库，语义对齐旧 SQLite 实现）——
+
+    fn agent_msg(session: &str, role: &str, content: &str) -> AgentMessage {
+        AgentMessage {
+            id: String::new(),
+            session_id: session.to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_name: None,
+            tool_args: None,
+            tool_result: None,
+            images: vec![],
+            created_at: crate::model::now_iso(),
+        }
+    }
+
+    #[test]
+    fn memory_log_append_list_and_sessions() {
+        let log = MemoryAgentLog::default();
+        log.append(&agent_msg("s1", "user", "明早十点开周会")).unwrap();
+        log.append(&agent_msg("s1", "assistant", "已创建日程")).unwrap();
+        log.append(&agent_msg(
+            "s2",
+            "user",
+            "另一个会话的第一句话很长很长很长需要被截断处理才行",
+        ))
+        .unwrap();
+
+        let msgs = log.list("s1").unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].content, "已创建日程");
+        // id 为空时自动生成。
+        assert!(!msgs[0].id.is_empty());
+
+        // 摘要：最近活跃在前，标题取首条 user 截 24 字符。
+        let sessions = log.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].session_id, "s2");
+        assert!(sessions[0].title.ends_with("…"));
+        assert_eq!(sessions[1].title, "明早十点开周会");
+        assert_eq!(sessions[1].message_count, 2);
+    }
+
+    #[test]
+    fn memory_log_images_roundtrip() {
+        let log = MemoryAgentLog::default();
+        let mut msg = agent_msg("s1", "user", "看这张图");
+        msg.images = vec!["data:image/jpeg;base64,AAA".to_string()];
+        log.append(&msg).unwrap();
+        assert_eq!(log.list("s1").unwrap()[0].images, msg.images);
+    }
+
+    #[test]
+    fn memory_log_delete_and_tombstone() {
+        let log = MemoryAgentLog::default();
+        log.append(&agent_msg("s1", "user", "a")).unwrap();
+        log.append(&agent_msg("s1", "assistant", "b")).unwrap();
+        log.append(&agent_msg("s2", "user", "c")).unwrap();
+
+        assert_eq!(log.delete_session("s1").unwrap(), 2);
+        assert!(log.list("s1").unwrap().is_empty());
+        assert_eq!(log.list_sessions().unwrap().len(), 1);
+
+        // 重复删除不报错；其他会话不受影响。
+        assert_eq!(log.delete_session("s1").unwrap(), 0);
+        assert_eq!(log.list("s2").unwrap().len(), 1);
+
+        // 墓碑拒写：删除后在途轮次的滞后写入不得复活会话（与旧库同语义）。
+        assert!(!log.append(&agent_msg("s1", "assistant", "迟到的回复")).unwrap());
+        assert!(log.list("s1").unwrap().is_empty());
+        assert_eq!(log.list_sessions().unwrap().len(), 1);
     }
 }

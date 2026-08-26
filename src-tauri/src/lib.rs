@@ -11,7 +11,7 @@ use mosh_core::agent::{
 use mosh_core::agent::mcp::McpToolInfo;
 use mosh_core::model::{EventInput, Record, RecordFilter, RecordPatch, Status, TodoInput};
 use mosh_core::service;
-use mosh_core::storage::{AgentMessage, AgentSessionSummary, SqliteStorage};
+use mosh_core::storage::{AgentMessage, AgentSessionSummary, MemoryAgentLog, SqliteStorage};
 use mosh_core::weather::{CurrentWeather, HttpClient, WeatherConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -403,11 +403,13 @@ fn load_ai_config(state: &SqliteStorage) -> Result<AiConfig, String> {
 /// 发送一条用户消息（可附图片）并驱动一轮 Agent 循环；事件经 `agent://*` 回传。
 /// `model` 为聊天界面所选模型（非空时覆盖配置里的默认模型）；
 /// `images` 为图片 data URL（vision 多模态，前端已压缩）。
+#[allow(clippy::too_many_arguments)] // State 注入多属环境参数，业务实参仅 4 个
 #[tauri::command]
 async fn agent_send(
     app: tauri::AppHandle,
     state: State<'_, SqliteStorage>,
     runs: State<'_, AgentRuns>,
+    log: State<'_, MemoryAgentLog>,
     session_id: String,
     message: String,
     model: String,
@@ -508,6 +510,7 @@ async fn agent_send(
     // run_turn 内部已保证 End 事件恰好一次（含错误/中断），此处 Err 仅日志级。
     let result = agent::run_turn_with(
         &state,
+        &log,
         &client,
         &session_id,
         message.trim(),
@@ -736,30 +739,30 @@ async fn test_ai_connection(
     client.test_connection().await.map_err(|e| e.to_string())
 }
 
-/// 会话摘要列表（最近活跃在前）。
+/// 会话摘要列表（内存态，最近活跃在前；重启即空）。
 #[tauri::command]
 fn list_agent_sessions(
-    state: State<'_, SqliteStorage>,
+    log: State<'_, MemoryAgentLog>,
 ) -> Result<Vec<AgentSessionSummary>, String> {
-    state.list_agent_sessions().map_err(|e| e.to_string())
+    log.list_sessions().map_err(|e| e.to_string())
 }
 
-/// 某会话的全部消息（历史回看）。
+/// 某会话的全部消息（内存重放；重启后空）。
 #[tauri::command]
 fn list_agent_messages(
-    state: State<'_, SqliteStorage>,
+    log: State<'_, MemoryAgentLog>,
     session_id: String,
 ) -> Result<Vec<AgentMessage>, String> {
-    state
-        .list_agent_messages(&session_id)
-        .map_err(|e| e.to_string())
+    log.list(&session_id).map_err(|e| e.to_string())
 }
 
-/// 删除整个会话（含全部消息行）。
+/// 删除整个会话（内存删除 + 墓碑拒写在途滞后写入；重启自然清空）。
 #[tauri::command]
-fn delete_agent_session(state: State<'_, SqliteStorage>, session_id: String) -> Result<(), String> {
-    state
-        .delete_agent_session(&session_id)
+fn delete_agent_session(
+    log: State<'_, MemoryAgentLog>,
+    session_id: String,
+) -> Result<(), String> {
+    log.delete_session(&session_id)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
@@ -1287,8 +1290,6 @@ struct SyncUi {
     /// > 0 时前端刷新数据视图——纯推送（无远端变更）不触发重载，避免防抖推
     /// > 每次都 dataVersion++ 引发事件视图无谓重载。
     applied: u32,
-    /// 本次同步新合并落地的聊天消息数（仅真实新插入行；门控会话视图刷新）。
-    messages_applied: u32,
 }
 
 /// 进程内同步状态（命令可查 + 事件可推）。
@@ -1355,7 +1356,6 @@ async fn run_sync(app: tauri::AppHandle) {
     ui.phase = "syncing".into();
     ui.error = None;
     ui.applied = 0;
-    ui.messages_applied = 0;
     set_sync_ui(&app, ui.clone());
     let result = match sync_remote_of(&state) {
         Ok(client) => mosh_core::sync::full_sync(&state, &client)
@@ -1371,7 +1371,6 @@ async fn run_sync(app: tauri::AppHandle) {
             ui.error = None;
             ui.applied =
                 (out.stats.records_applied + out.stats.settings_applied) as u32;
-            ui.messages_applied = out.stats.messages_applied as u32;
             // 设置落地可能更新 MCP 服务器配置：后台刷新工具缓存（不阻塞）。
             if out.stats.settings_applied > 0 {
                 if let Some(state) = app.try_state::<SqliteStorage>() {
@@ -1382,7 +1381,6 @@ async fn run_sync(app: tauri::AppHandle) {
         Err(e) => {
             ui.phase = "error".into();
             ui.applied = 0;
-            ui.messages_applied = 0;
             ui.error = Some(e);
         }
     }
@@ -1754,7 +1752,6 @@ async fn sync_now(app: tauri::AppHandle) -> Result<mosh_core::sync::SyncOutcome,
     ui.phase = "syncing".into();
     ui.error = None;
     ui.applied = 0;
-    ui.messages_applied = 0;
     set_sync_ui(&app, ui);
     let client = sync_remote_of(&state)?;
     let outcome = mosh_core::sync::full_sync(&state, &client)
@@ -1765,7 +1762,6 @@ async fn sync_now(app: tauri::AppHandle) -> Result<mosh_core::sync::SyncOutcome,
     ui.last_success_at = mosh_core::model::now_iso().into();
     ui.error = None;
     ui.applied = (outcome.stats.records_applied + outcome.stats.settings_applied) as u32;
-    ui.messages_applied = outcome.stats.messages_applied as u32;
     set_sync_ui(&app, ui);
     Ok(outcome)
 }
@@ -1959,6 +1955,7 @@ pub fn run() {
             app.manage(client);
             app.manage(WeatherCache::default());
             app.manage(AgentRuns::default());
+            app.manage(MemoryAgentLog::default());
             app.manage(McpToolCache::default());
             // MCP 工具缓存预热：启动即后台拉取（发送路径只读缓存，零网络等待）。
             {

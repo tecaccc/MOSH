@@ -105,3 +105,34 @@ initialize+tools/list（单台最长 20s）拖住 LLM 首包——改为 McpTool
 ### Status
 
 [OK] **Completed**
+
+## Session: AI 会话历史改内存态（去持久化）
+
+**Date**: 2026-08-26
+**Task**: `08-26-chat-history-memory`
+**Branch**: main（工作区直接实现）
+
+### Summary
+
+用户决断：聊天历史落库没必要且占存储，去持久化。新增 `MemoryAgentLog`
+（append/list/list_sessions/delete_session + 内存墓碑防在途写入复活），
+runner 读写切内存，v8 迁移 DROP agent_messages/agent_session_tombstones
+（存量记录清除=释放存储）。同步协议关键兼容：dump 的 agent_messages/
+deleted_sessions 字段保留但恒空（旧版读新 dump 需要键存在，否则整包
+解析失败殃及 records/settings）；类型放宽 Vec<Value>；merge 忽略旧 dump
+消息；MergeStats/SyncUi/前端 messages_applied 与 reloadAfterSync 全链路下线。
+会话侧栏保留运行期切换，标签改「会话（重启清空）」。
+
+### 质量门
+
+`cargo test -p mosh-core`(132) / clippy(mosh-core + src-tauri windows-gnu
+`--all-targets -D warnings`) / `npm run check` / `npm run build` 全过。
+
+### 教训（候选 spec 条目）
+
+跨版本 dump 兼容：删除一个字段前先确认旧版本反序列化是否 default；
+恒空输出比移除字段安全（移除会令旧客户端整包跳过）。
+
+### Status
+
+[OK] **Completed**

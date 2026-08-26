@@ -161,7 +161,6 @@ fn clear_dirty() {
 mod tests {
     use super::*;
     use crate::model::{Kind, Record, Status};
-    use crate::storage::AgentMessage;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -285,32 +284,19 @@ mod tests {
         assert_eq!(visible[0].title, "写完周报");
     }
 
-    /// 设置与聊天历史也随 dump 同步；`sync.*` 键不串台。
+    /// 设置随 dump 同步；`sync.*` 键不串台。
     #[tokio::test]
-    async fn settings_and_messages_sync_but_device_keys_do_not() {
+    async fn settings_sync_but_device_keys_do_not() {
         let remote = MemoryRemote::default();
         let key = crypto::encode_key(&crypto::generate_key());
         let a = device(&key, "a");
         a.set_setting("theme", "dark").unwrap();
         a.set_setting(KEY_SECRET_KEY, "A_MACHINE_SK").unwrap();
-        a.append_agent_message(&AgentMessage {
-            id: String::new(),
-            session_id: "s1".into(),
-            role: "user".into(),
-            content: "帮我建个日程".into(),
-            tool_name: None,
-            tool_args: None,
-            tool_result: None,
-            created_at: "2026-08-18T09:00:00+00:00".into(),
-                images: vec![],
-            })
-        .unwrap();
         full_sync(&a, &remote).await.unwrap();
 
         let b = device(&key, "b");
         full_sync(&b, &remote).await.unwrap();
         assert_eq!(b.get_setting("theme").unwrap().as_deref(), Some("dark"));
-        assert_eq!(b.list_agent_messages("s1").unwrap().len(), 1);
         // B 的密钥/凭证未被 A 覆盖。
         assert_eq!(
             b.get_setting(KEY_SECRET_KEY).unwrap().as_deref(),
@@ -318,70 +304,38 @@ mod tests {
         );
     }
 
-    /// 删除会话后同步不得复活（BUG：一方删除 AI 会话/待办/日程，点同步又同步出来）。
+    /// 删除记录后同步不得复活（BUG：一方删除待办/日程，点同步又同步出来）。
     ///
-    /// 复现路径：A 删会话 → A 点同步 → 拉到 B 的旧 dump（仍含该会话全部消息）→
-    /// 并集合并把消息原样插回 → 会话在删除它的那台设备上当场复活。
-    /// 待办/日程走墓碑 LWW，同场景一并断言不得复活。
+    /// 复现路径：A 删记录 → A 点同步 → 拉到 B 的旧 dump（仍含该记录活跃版本）
+    /// → 若无墓碑机制，旧版本覆盖回活跃态。records 走墓碑 LWW，断言不得复活。
+    /// （AI 会话历史已改内存态不同步，会话复活场景不复存在。）
     #[tokio::test]
-    async fn deleted_records_and_sessions_stay_deleted_after_sync() {
+    async fn deleted_records_stay_deleted_after_sync() {
         let remote = MemoryRemote::default();
         let key = crypto::encode_key(&crypto::generate_key());
 
-        // A：一条待办 + 一个会话，同步上云。
+        // A：一条待办，同步上云。
         let a = device(&key, "a");
         a.insert(&rec("t1", "旧待办", "2020-01-01T09:00:00+00:00"))
             .unwrap();
-        a.append_agent_message(&AgentMessage {
-            id: String::new(),
-            session_id: "s1".into(),
-            role: "user".into(),
-            content: "你好".into(),
-            tool_name: None,
-            tool_args: None,
-            tool_result: None,
-            created_at: "2020-01-01T09:00:00+00:00".into(),
-                images: vec![],
-            })
-        .unwrap();
         full_sync(&a, &remote).await.unwrap();
 
-        // B 拉取 → 两者均到达。
+        // B 拉取 → 到达。
         let b = device(&key, "b");
         full_sync(&b, &remote).await.unwrap();
         assert!(b.get("t1").is_ok());
-        assert_eq!(b.list_agent_messages("s1").unwrap().len(), 1);
 
-        // A 删除待办与整个会话，点「立即同步」：拉到 B 的 dump（两者仍在）。
+        // A 删除待办，点「立即同步」：拉到 B 的 dump（记录仍活跃）。
         a.soft_delete("t1").unwrap();
-        a.delete_agent_session("s1").unwrap();
-        // 删除后在途轮次的滞后写入（如回复落地）不得复活会话（墓碑拒写）。
-        assert!(!a
-            .append_agent_message(&AgentMessage {
-                id: String::new(),
-                session_id: "s1".into(),
-                role: "assistant".into(),
-                content: "迟到的回复".into(),
-                tool_name: None,
-                tool_args: None,
-                tool_result: None,
-                created_at: "2026-08-18T09:00:01+00:00".into(),
-                images: vec![],
-            })
-            .unwrap());
         full_sync(&a, &remote).await.unwrap();
         // 删除不得在删除者木机复活（BUG 现象：点同步又同步出来）。
-        assert!(a.list_agent_messages("s1").unwrap().is_empty());
-        assert!(a.list_agent_sessions().unwrap().is_empty());
         assert!(a.get("t1").unwrap().deleted_at.is_some());
 
         // B 再同步：删除传播且稳定（反复同步不复活）。
         full_sync(&b, &remote).await.unwrap();
-        assert!(b.list_agent_messages("s1").unwrap().is_empty());
-        assert!(b.list_agent_sessions().unwrap().is_empty());
         assert!(b.get("t1").unwrap().deleted_at.is_some());
         full_sync(&b, &remote).await.unwrap();
-        assert!(b.list_agent_sessions().unwrap().is_empty());
+        assert!(b.get("t1").unwrap().deleted_at.is_some());
     }
 
     /// 密钥不匹配的远端对象：跳过且不阻塞（换钥重置场景的另一半仍可同步）。

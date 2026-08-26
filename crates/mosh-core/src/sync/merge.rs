@@ -4,9 +4,8 @@
 //! - **records**：按 id 对齐；`updated_at` 新者赢，同值比 `revision`，再同值保留本地（幂等）。
 //!   墓碑是普通记录（`deleted_at` 非空），走同一规则——删除动作由此传播。
 //! - **settings**：按 key，`updated_at` 新者赢；`sync.*` 设备本地键直接忽略。
-//! - **agent_messages**：按 id 并集（append-only 不可变，`ON CONFLICT DO NOTHING`）；
-//!   已删会话（`deleted_sessions` 墓碑，同为只增并集）的消息不入库，本地残留
-//!   一并清理——否则删除的会话会被他机旧 dump 复活。
+//! - **agent_messages**：2026-08-26 起历史改存进程内存，不再合并入库
+//!   （旧 dump 携带的消息被忽略，字段仅为协议兼容保留）。
 //!
 //! 交替使用的前提（同秒并发概率≈0）使 LWW 足够；旧的静默丢弃，无冲突 UI。
 
@@ -22,7 +21,6 @@ use crate::sync::dump::{is_device_local, Dump};
 pub struct MergeStats {
     pub records_applied: usize,
     pub settings_applied: usize,
-    pub messages_applied: usize,
 }
 
 /// 单条 record 裁决：远端是否应覆盖本地。`local = None`（本地无此 id）→ 应用。
@@ -93,20 +91,8 @@ pub fn apply(db: &SqliteStorage, remotes: &[Dump]) -> Result<MergeStats, CoreErr
                 stats.settings_applied += 1;
             }
         }
-        // 会话墓碑先落地（并集）：清理本地残留消息，并为本 dump 及后续 dump 的
-        // 消息过滤提供依据（表查询与 dump 应用顺序无关）。
-        stats.messages_applied += db.apply_session_tombstones(&dump.deleted_sessions)?;
-        for remote in &dump.agent_messages {
-            // 已删会话的消息不入库：他机尚未拉到墓碑的旧 dump 仍携带它们。
-            if db.session_tombstoned(&remote.session_id)? {
-                continue;
-            }
-            // 并集：append 的 UPSERT 语义；仅统计真正新插入的行
-            // （幂等重放已存在行不计——计数是同步事件的门控信号，须反映真实变更）。
-            if db.append_agent_message(remote)? {
-                stats.messages_applied += 1;
-            }
-        }
+        // 注：dump.agent_messages / deleted_sessions 不再合并（历史已去持久化，
+        // 旧 dump 携带的消息直接忽略——见模块注释）。
     }
     Ok(stats)
 }
@@ -115,7 +101,7 @@ pub fn apply(db: &SqliteStorage, remotes: &[Dump]) -> Result<MergeStats, CoreErr
 mod tests {
     use super::*;
     use crate::model::{Kind, Status};
-    use crate::storage::{AgentMessage, SessionTombstone};
+
 
     fn rec(id: &str, updated_at: &str, revision: i64) -> Record {
         Record {
@@ -137,20 +123,6 @@ mod tests {
         }
     }
 
-    fn msg(id: &str, session: &str) -> AgentMessage {
-        AgentMessage {
-            id: id.into(),
-            session_id: session.into(),
-            role: "user".into(),
-            content: format!("c-{id}"),
-            tool_name: None,
-            tool_args: None,
-            tool_result: None,
-            created_at: "2026-08-18T09:00:00+00:00".into(),
-                images: vec![],
-            }
-    }
-
     fn setting(key: &str, value: &str, updated_at: &str) -> SettingRow {
         SettingRow {
             key: key.into(),
@@ -159,19 +131,14 @@ mod tests {
         }
     }
 
-    fn dump_from(
-        device: &str,
-        records: Vec<Record>,
-        settings: Vec<SettingRow>,
-        messages: Vec<AgentMessage>,
-    ) -> Dump {
+    fn dump_from(device: &str, records: Vec<Record>, settings: Vec<SettingRow>) -> Dump {
         Dump {
             version: 1,
             device_id: device.into(),
             dumped_at: "2026-08-18T10:00:00+00:00".into(),
             records,
             settings,
-            agent_messages: messages,
+            agent_messages: vec![],
             deleted_sessions: vec![],
         }
     }
@@ -235,12 +202,11 @@ mod tests {
     // —— 整库合并 ——
 
     #[test]
-    fn apply_merges_records_settings_messages() {
+    fn apply_merges_records_and_settings() {
         let db = SqliteStorage::open_in_memory().unwrap();
         db.insert(&rec("t1", "2026-08-18T09:00:00+00:00", 1))
             .unwrap();
         db.set_setting("theme", "dark").unwrap();
-        db.append_agent_message(&msg("m1", "s1")).unwrap();
 
         let remote = dump_from(
             "peer",
@@ -249,21 +215,36 @@ mod tests {
                 rec("t2", "2026-08-18T08:00:00+00:00", 1), // 新 id → 应用（即便时间更旧）
             ],
             vec![setting("theme", "light", "2999-01-01T00:00:00+00:00")],
-            vec![msg("m1", "s1"), msg("m2", "s1")], // m1 已存在（并集）
         );
 
         let stats = apply(&db, &[remote]).unwrap();
         assert_eq!(stats.records_applied, 2);
         assert_eq!(stats.settings_applied, 1);
-        assert_eq!(stats.messages_applied, 1); // 仅 m2 新插入；m1 已存在不计（幂等）
 
         let t1 = db.get("t1").unwrap();
         assert_eq!(t1.revision, 2);
         assert_eq!(db.get("t2").unwrap().id, "t2");
         assert_eq!(db.get_setting("theme").unwrap().as_deref(), Some("light"));
-        let msgs = db.list_agent_messages("s1").unwrap();
-        let ids: Vec<&str> = msgs.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["m1", "m2"]);
+    }
+
+    #[test]
+    fn apply_ignores_legacy_agent_messages_in_old_dumps() {
+        // 旧版本 dump 仍携带 agent_messages：解析不报错，内容被忽略（不入库）。
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let remote = Dump {
+            version: 1,
+            device_id: "peer".into(),
+            dumped_at: "2026-08-18T10:00:00+00:00".into(),
+            records: vec![],
+            settings: vec![setting("theme", "light", "2999-01-01T00:00:00+00:00")],
+            agent_messages: vec![serde_json::json!({
+                "id": "m1", "session_id": "s1", "role": "user",
+                "content": "旧消息", "created_at": "2026-08-01T00:00:00+00:00"
+            })],
+            deleted_sessions: vec![serde_json::json!({"session_id": "s1"})],
+        };
+        let stats = apply(&db, std::slice::from_ref(&remote)).unwrap();
+        assert_eq!(stats.settings_applied, 1);
     }
 
     #[test]
@@ -278,7 +259,6 @@ mod tests {
                 "LEAKED",
                 "2999-01-01T00:00:00+00:00",
             )],
-            vec![],
         );
         let stats = apply(&db, &[remote]).unwrap();
         assert_eq!(stats.settings_applied, 0);
@@ -289,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn tombstone_propagates_and_resurrects_locally() {
+    fn record_tombstone_propagates_to_peer() {
         // 场景：设备 B 删了 t1（墓碑），设备 A 本地 t1 仍活跃 → 同步后 A 应见到墓碑。
         let db = SqliteStorage::open_in_memory().unwrap();
         db.insert(&rec("t1", "2026-08-18T09:00:00+00:00", 1))
@@ -297,7 +277,7 @@ mod tests {
 
         let mut deleted = rec("t1", "2026-08-18T12:00:00+00:00", 2);
         deleted.deleted_at = Some("2026-08-18T12:00:00+00:00".into());
-        let remote = dump_from("peer", vec![deleted], vec![], vec![]);
+        let remote = dump_from("peer", vec![deleted], vec![]);
 
         apply(&db, &[remote]).unwrap();
         let t1 = db.get("t1").unwrap();
@@ -308,44 +288,12 @@ mod tests {
     }
 
     #[test]
-    fn session_tombstone_cleans_local_and_blocks_stale_dump() {
-        // 场景：本机 s1/s2 有消息；远端 dump 携带 s1 墓碑 + s1 旧消息
-        // （他机拉到墓碑前的快照）+ s2 新消息。
-        let db = SqliteStorage::open_in_memory().unwrap();
-        db.append_agent_message(&msg("m1", "s1")).unwrap();
-        db.append_agent_message(&msg("m2", "s2")).unwrap();
-        let remote = Dump {
-            version: 1,
-            device_id: "peer".into(),
-            dumped_at: "2026-08-18T10:00:00+00:00".into(),
-            records: vec![],
-            settings: vec![],
-            agent_messages: vec![msg("m1", "s1"), msg("m3", "s2")],
-            deleted_sessions: vec![SessionTombstone {
-                session_id: "s1".into(),
-                deleted_at: "2026-08-18T12:00:00+00:00".into(),
-            }],
-        };
-        let stats = apply(&db, std::slice::from_ref(&remote)).unwrap();
-        // s1：本地消息清理 + 旧消息不插回；s2：新消息到达。
-        assert!(db.list_agent_messages("s1").unwrap().is_empty());
-        assert!(db.list_agent_sessions().unwrap().iter().all(|s| s.session_id != "s1"));
-        assert_eq!(db.list_agent_messages("s2").unwrap().len(), 2);
-        // 计数含清理（m1）与新插入（m3）——均为需刷新 UI 的消息变更。
-        assert_eq!(stats.messages_applied, 2);
-        // 幂等：重放同 dump 无新变更。
-        let again = apply(&db, &[remote]).unwrap();
-        assert_eq!(again.messages_applied, 0);
-    }
-
-    #[test]
     fn apply_is_idempotent() {
         let db = SqliteStorage::open_in_memory().unwrap();
         let remote = dump_from(
             "peer",
             vec![rec("t1", "2026-08-18T10:00:00+00:00", 2)],
             vec![setting("theme", "light", "2026-08-18T10:00:00+00:00")],
-            vec![msg("m1", "s1")],
         );
         apply(&db, std::slice::from_ref(&remote)).unwrap();
         let once = db.get("t1").unwrap();
@@ -353,26 +301,14 @@ mod tests {
         let stats = apply(&db, &[remote]).unwrap();
         assert_eq!(stats.records_applied, 0);
         assert_eq!(stats.settings_applied, 0);
-        assert_eq!(stats.messages_applied, 0);
         assert_eq!(db.get("t1").unwrap(), once);
-        assert_eq!(db.list_agent_messages("s1").unwrap().len(), 1);
     }
 
     #[test]
     fn multiple_dumps_latest_write_wins() {
         let db = SqliteStorage::open_in_memory().unwrap();
-        let d1 = dump_from(
-            "a",
-            vec![rec("t1", "2026-08-18T09:00:00+00:00", 1)],
-            vec![],
-            vec![],
-        );
-        let d2 = dump_from(
-            "b",
-            vec![rec("t1", "2026-08-18T11:00:00+00:00", 5)],
-            vec![],
-            vec![],
-        );
+        let d1 = dump_from("a", vec![rec("t1", "2026-08-18T09:00:00+00:00", 1)], vec![]);
+        let d2 = dump_from("b", vec![rec("t1", "2026-08-18T11:00:00+00:00", 5)], vec![]);
         // 顺序无关：b 更新，最终胜出。
         apply(&db, &[d2.clone(), d1.clone()]).unwrap();
         assert_eq!(db.get("t1").unwrap().revision, 5);

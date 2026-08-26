@@ -5,8 +5,9 @@
 
 use crate::error::CoreError;
 use crate::model::Record;
-use crate::storage::{AgentMessage, SessionTombstone, SettingRow, SqliteStorage};
+use crate::storage::{SettingRow, SqliteStorage};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::{Read, Write};
 
 /// 当前 dump 协议版本。
@@ -27,12 +28,13 @@ pub struct Dump {
     pub records: Vec<Record>,
     /// 全量 settings（已排除 `sync.*` 设备本地键）。
     pub settings: Vec<SettingRow>,
-    /// 全量 agent 会话消息。
-    pub agent_messages: Vec<AgentMessage>,
-    /// 已删会话墓碑（并集合并；压制他机旧 dump 里的会话消息复活）。
-    /// `#[serde(default)]`：v1 旧 dump 无此字段——首见空集，协议版本不升级。
+    /// 全量 agent 会话消息。**2026-08-26 起恒为空**：历史改存进程内存不再同步，
+    /// 字段仅为协议兼容保留（旧版本 App 读新 dump 需要该键存在；新版本读旧
+    /// dump 时内容被忽略，不入库）。类型取 `Value`：旧 dump 里任意形态均可解析。
+    pub agent_messages: Vec<Value>,
+    /// 已删会话墓碑。同上：恒为空，仅为协议兼容保留。
     #[serde(default)]
-    pub deleted_sessions: Vec<SessionTombstone>,
+    pub deleted_sessions: Vec<Value>,
 }
 
 /// 从本地库抓取全量快照。
@@ -50,8 +52,8 @@ pub fn capture(db: &SqliteStorage, device_id: &str) -> Result<Dump, CoreError> {
             .into_iter()
             .filter(|row| !is_device_local(&row.key))
             .collect(),
-        agent_messages: db.list_all_agent_messages()?,
-        deleted_sessions: db.list_session_tombstones()?,
+        agent_messages: Vec::new(),
+        deleted_sessions: Vec::new(),
     })
 }
 
@@ -113,23 +115,11 @@ mod tests {
         .unwrap();
         db.set_setting("weather", "\"Hangzhou\"").unwrap();
         db.set_setting("sync.secret_key", "LEAKED").unwrap();
-        db.append_agent_message(&AgentMessage {
-            id: String::new(),
-            session_id: "s1".into(),
-            role: "user".into(),
-            content: "你好".into(),
-            tool_name: None,
-            tool_args: None,
-            tool_result: None,
-            created_at: "2026-08-18T09:00:00+00:00".into(),
-                images: vec![],
-            })
-        .unwrap();
         db
     }
 
     #[test]
-    fn capture_excludes_device_local_keys_and_keeps_tombstones() {
+    fn capture_excludes_device_local_keys() {
         let db = sample_db();
         db.soft_delete("t1").unwrap(); // 变墓碑，仍应入 dump
         let dump = capture(&db, "device-a").unwrap();
@@ -137,7 +127,9 @@ mod tests {
         assert!(dump.records[0].deleted_at.is_some());
         assert_eq!(dump.settings.len(), 1);
         assert_eq!(dump.settings[0].key, "weather"); // sync.* 被排除
-        assert_eq!(dump.agent_messages.len(), 1);
+        // 会话消息不再入 dump（内存态，恒空）。
+        assert!(dump.agent_messages.is_empty());
+        assert!(dump.deleted_sessions.is_empty());
     }
 
     #[test]
@@ -168,15 +160,14 @@ mod tests {
     }
 
     #[test]
-    fn deleted_sessions_roundtrip() {
-        let db = sample_db();
-        db.delete_agent_session("s1").unwrap();
-        let dump = capture(&db, "device-a").unwrap();
-        assert!(dump.agent_messages.is_empty());
-        assert_eq!(dump.deleted_sessions.len(), 1);
-        assert_eq!(dump.deleted_sessions[0].session_id, "s1");
-        let back = from_bytes(&to_bytes(&dump).unwrap()).unwrap();
-        assert_eq!(back.deleted_sessions, dump.deleted_sessions);
+    fn v1_dump_with_legacy_fields_parses_and_is_ignored() {
+        // 旧版客户端 dump 含 agent_messages/deleted_sessions 字段 → 新版可解析
+        // （内容在合并时被忽略，不入库——历史已去持久化）。
+        let json = r#"{"version":1,"device_id":"old","dumped_at":"2026-08-01T00:00:00+00:00","records":[],"settings":[],"agent_messages":[{"id":"m1","session_id":"s1","role":"user","content":"旧消息","created_at":"2026-08-01T00:00:00+00:00"}],"deleted_sessions":[]}"#;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(json.as_bytes()).unwrap();
+        let dump = from_bytes(&gz.finish().unwrap()).unwrap();
+        assert_eq!(dump.agent_messages.len(), 1);
     }
 
     #[test]
