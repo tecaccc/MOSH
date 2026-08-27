@@ -1,15 +1,83 @@
 .titlebar {
+  position: relative; /* 侧栏开关绝对定位的包含块 */
   display: grid;
-  grid-template-columns: 248px 1fr auto;
+  grid-template-columns: auto 1fr auto;
   height: 36px;
   flex: none;
   user-select: none;
 }
 
-/* 与 Sidebar 同宽同色、同一竖向边线，视觉上无缝衔接。 */
+/* 侧栏开关：绝对定位钉在标题栏最左（x=0），不占网格列——
+   tb-left 保持与下方侧栏同步的 248↔0 宽度动画，竖线全程零错位。
+   展开时透明底浮在侧栏色带上（hover 轻底色）；折叠后浮在主区左上角。 */
+.tb-toggle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  outline: none;
+}
+
+.tb-toggle:hover {
+  background: rgba(0, 0, 0, 0.055);
+  color: var(--text);
+}
+
+.tb-toggle:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* 填充块：展开时淡填充示意侧栏挂载；折叠时淡出只剩轮廓。
+   与侧栏宽度动画同节奏过渡。 */
+.tb-toggle-fill {
+  opacity: 0.55;
+  transition: opacity 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tb-toggle.collapsed .tb-toggle-fill {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tb-toggle-fill {
+    transition-duration: 0.01ms;
+  }
+}
+
+/* 与 Sidebar 同宽同色、同一竖向边线，视觉上无缝衔接（折叠时收起）。
+   首列 auto 跟随 tb-left 的 min/max-width（与侧栏同一套折叠动画）。 */
 .tb-left {
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
+  min-width: 248px;
+  max-width: 248px;
+  overflow: hidden;
+  transition:
+    min-width 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.28s ease;
+}
+
+.tb-left.collapsed {
+  min-width: 0;
+  max-width: 0;
+  border-right-color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tb-left {
+    transition-duration: 0.01ms;
+  }
 }
 
 .tb-main {
@@ -55,21 +123,9 @@
   color: #ffffff;
 }
 
-/* 会话历史开关（助手视图，位于最小化左侧）：与窗口按钮同规格但可点击，
-   与窗口按钮之间留一道细分隔线区分功能。 */
-.tb-chat {
-  cursor: pointer;
-  color: var(--text-muted);
-  border-left: 1px solid var(--border-soft);
-  border-right: 1px solid var(--border-soft);
-}
-
-.tb-chat.on {
-  color: var(--accent);
-}
-
 @media (prefers-color-scheme: dark) {
-  .tb-btn:hover {
+  .tb-btn:hover,
+  .tb-toggle:hover {
     background: rgba(255, 255, 255, 0.09);
   }
 
@@ -80,7 +136,12 @@
 
 @media (max-width: 900px) {
   .titlebar {
-    grid-template-columns: 64px 1fr auto;
+    grid-template-columns: auto 1fr auto;
+  }
+
+  .tb-left {
+    min-width: 64px;
+    max-width: 64px;
   }
 }
 
@@ -92,11 +153,6 @@
   color: var(--text-muted);
   border-left: 1px solid var(--border-soft);
   border-right: 1px solid var(--border-soft);
-}
-
-/* 相邻功能按钮（同步与会话历史同现时）不叠双分隔线。 */
-.tb-sync + .tb-chat {
-  border-left: none;
 }
 
 .tb-sync[data-phase="error"] {

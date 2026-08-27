@@ -1,12 +1,56 @@
+/* 侧栏宽度由 min/max-width 同值驱动（App 网格首列 auto 跟随），
+   折叠时三者同步过渡到 0 —— 网格列不参与动画也能平滑收放。 */
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 16px;
   padding: 16px 14px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   height: 100%;
   overflow: hidden;
+  min-width: 248px;
+  max-width: 248px;
+  transition:
+    min-width 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.28s ease;
+}
+
+.sidebar.collapsed {
+  min-width: 0;
+  max-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right-color: transparent;
+}
+
+/* 内容层：固定内容宽（248 - 两侧 padding - 1px 边线），收起时不挤压只被裁切；
+   折叠时快速淡出，展开时滞后于宽度动画淡入。 */
+.inner {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  min-width: 219px;
+  opacity: 1;
+  transition: opacity 0.2s ease 0.12s;
+}
+
+.sidebar.collapsed .inner {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition-duration: 0.01ms;
+  }
+  .inner {
+    transition-duration: 0.01ms;
+    transition-delay: 0s;
+  }
 }
 
 .brand {
@@ -104,6 +148,11 @@
 }
 
 @media (max-width: 900px) {
+  .sidebar {
+    min-width: 64px;
+    max-width: 64px;
+  }
+
   .wordmark,
   .label,
   .kbd-hint {
@@ -118,10 +167,5 @@
   .nav-item {
     justify-content: center;
     padding: 0;
-  }
-
-  .brand {
-    justify-content: center;
-    padding: 4px 0;
   }
 }

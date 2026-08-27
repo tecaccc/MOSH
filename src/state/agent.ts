@@ -2,8 +2,9 @@
  * Agent 聊天状态（zustand；原 agent.svelte.ts 迁移）。
  *
  * 事件监听在 initAgent() 注册一次（ChatPanel useEffect 调用；幂等）。
- * UI 消息模型在内存消息行之上叠加流式气泡状态；会话切换时从内存仓库重放。
- * 2026-08-26 起历史不再落库/同步：全部会话消息存进程内存，重启即清空。
+ * UI 消息模型在内存消息行之上叠加流式气泡状态。2026-08-26 起历史不再
+ * 落库/同步：会话消息存进程内存，重启即清空；会话侧栏已移除，
+ * 顶栏「+ 新会话」随时重开对话。
  */
 
 import { listen } from "@tauri-apps/api/event";
@@ -12,12 +13,9 @@ import {
   agentAbort as ipcAbort,
   agentApprove,
   agentSend as ipcSend,
-  deleteAgentSession,
   deleteRecord as ipcDeleteRecord,
   getAiConfig,
   getPermissionMode,
-  listAgentMessages,
-  listAgentSessions,
   listAiModels,
   listMcpServers,
   listSkills,
@@ -27,7 +25,6 @@ import {
 } from "../lib/ipc";
 import type {
   AgentEventPayload,
-  AgentSessionSummary,
   McpServerConfig,
   PermissionMode,
   SkillInfo,
@@ -95,7 +92,6 @@ export interface PendingApproval {
 interface AgentState {
   messages: UiMessage[];
   streaming: boolean;
-  sessions: AgentSessionSummary[];
   currentSession: string;
   /** null = 尚未探测；false = 未配置；true = 已配置。 */
   configured: boolean | null;
@@ -112,10 +108,7 @@ interface AgentState {
   pendingApproval: PendingApproval | null;
 
   init(): Promise<void>;
-  refreshSessions(): Promise<void>;
   newSession(): void;
-  openSession(id: string): Promise<void>;
-  deleteSession(id: string): Promise<void>;
   send(text: string, images?: string[]): Promise<void>;
   abort(): Promise<void>;
   selectModel(m: string): void;
@@ -137,25 +130,6 @@ let listenersBound = false;
 let seq = 0;
 const nextKey = (): string => `m${++seq}`;
 
-function safeJson(s: string | null): unknown {
-  if (!s) return undefined;
-  try {
-    return JSON.parse(s);
-  } catch {
-    return s;
-  }
-}
-
-function okOf(resultJson: string | null): boolean | undefined {
-  if (!resultJson) return undefined;
-  try {
-    const v = JSON.parse(resultJson);
-    return typeof v?.ok === "boolean" ? v.ok : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** 结算流式气泡（无文本则移除空气泡）。 */
 function settleStreaming(set: (fn: (s: AgentState) => Partial<AgentState>) => void): void {
   if (!streamingKey) return;
@@ -176,7 +150,6 @@ function settleStreaming(set: (fn: (s: AgentState) => Partial<AgentState>) => vo
 export const useAgentStore = create<AgentState>()((set, get) => ({
   messages: [],
   streaming: false,
-  sessions: [],
   currentSession: "",
   configured: null,
   error: null,
@@ -187,7 +160,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   permissionMode: "auto",
   pendingApproval: null,
 
-  /** 初始化：读配置 + 会话列表 + 可选模型 + 技能/MCP + 绑定事件（幂等）。 */
+  /** 初始化：读配置 + 可选模型 + 技能/MCP + 绑定事件（幂等）。 */
   init: async () => {
     try {
       const cfg = await getAiConfig();
@@ -204,15 +177,13 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     } catch {
       set({ configured: false });
     }
-    await get().refreshSessions();
     await get().loadChatTools();
     try {
       set({ permissionMode: await getPermissionMode() });
     } catch {
       /* 非 Tauri 环境忽略 */
     }
-    // 默认落在新会话页（空输入位，首条消息发送时自然成会话）；
-    // 历史会话从右侧侧栏点开——不再自动恢复最近会话，避免误接旧上下文。
+    // 默认落在新会话页（空输入位，首条消息发送时自然成会话）。
     if (!get().currentSession) {
       get().newSession();
     }
@@ -292,17 +263,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
         if (p.reason === "error" && lastTurnSession === get().currentSession) {
           set({ error: p.error ?? "模型调用失败" });
         }
-        // 会话标题可能因首条 user 消息而新建；静默刷新。
-        void get().refreshSessions();
       });
-    }
-  },
-
-  refreshSessions: async () => {
-    try {
-      set({ sessions: await listAgentSessions() });
-    } catch {
-      /* 非 Tauri 环境忽略 */
     }
   },
 
@@ -362,47 +323,10 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     }
   },
 
-  /** 打开会话（内存重放，含图片附件；重启后为空）。 */
-  openSession: async (id) => {
-    streamingKey = null;
-    set({ currentSession: id });
-    try {
-      const rows = await listAgentMessages(id);
-      set({
-        messages: rows.map((r) => ({
-          key: `db${r.id}`,
-          role: r.role as UiMessage["role"],
-          text: r.content,
-          images: r.images && r.images.length > 0 ? r.images : undefined,
-          tool: r.tool_name ?? undefined,
-          args: safeJson(r.tool_args),
-          result: safeJson(r.tool_result),
-          ok: okOf(r.tool_result),
-        })),
-      });
-    } catch {
-      set({ messages: [] });
-    }
-  },
-
-  /** 新建会话（前端生成 id；首条消息落库时自然成会话）。 */
+  /** 新建会话（前端生成 id；首条消息发送时自然成会话）。 */
   newSession: () => {
     streamingKey = null;
     set({ currentSession: crypto.randomUUID(), messages: [], error: null });
-  },
-
-  /** 删除会话：删库 + 刷新列表；删的是当前会话则另起一个空的新会话页
-   * （与「打开聊天默认新会话」一致；后端墓碑同时拦截在途轮次的滞后写入）。 */
-  deleteSession: async (id) => {
-    try {
-      await deleteAgentSession(id);
-      await get().refreshSessions();
-      if (get().currentSession === id) {
-        get().newSession();
-      }
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
   },
 
   /** 发送消息（可附图片）：落 UI 气泡 + 驱动后端循环；失败（未配置/在跑）→ error。 */

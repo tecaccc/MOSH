@@ -13,7 +13,7 @@ import Avatar from "./Avatar";
 import styles from "./HomeView.module.css";
 
 /**
- * 首页（仪表盘）：Banner（天气 + 时钟 + 问候 + 插画）、Stats 四卡、
+ * 首页（仪表盘）：Banner（天气 + 时钟 + 问候 + 插画）、
  * 日程安排（今天起 30 天，按日分组时间轴）、待办事项卡、
  * 月历 mini-grid（每日农历、高亮今日、点日钻取）。
  */
@@ -23,9 +23,6 @@ const SCHEDULE_DAYS = 30;
 const pad = (n: number): string => String(n).padStart(2, "0");
 const DOW = "日一二三四五六";
 const round = Math.round;
-
-const NOTES_STAT = { value: "12", sub: "3 篇未归档" };
-const PROJECTS_STAT = { value: "3", sub: "全部正常" };
 
 const PRIO_RANK: Record<Priority, number> = { high: 0, medium: 1, low: 2, none: 3 };
 const PRIO_LABEL: Record<Priority, string> = { none: "无", low: "低", medium: "中", high: "高" };
@@ -47,14 +44,6 @@ function greetingOf(d: Date): string {
 }
 const weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"];
 const CAL_COLORS = ["var(--cal-1)", "var(--cal-2)", "var(--cal-3)", "var(--cal-4)"];
-
-function isSameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
 
 /** date-only 的本地星期（`周X`）。 */
 function weekdayOf(day: string): string {
@@ -134,23 +123,6 @@ export default function HomeView() {
   const footerDate = `今日 · ${now.getMonth() + 1}月${now.getDate()}日 周${DOW[now.getDay()]}`;
   const footerLunar = lunarFull(today);
 
-  const dueToday = useMemo(
-    () =>
-      records.filter(
-        (r) => r.status === "active" && r.end_at !== null && isSameDay(new Date(r.end_at), now),
-      ),
-    [records, now],
-  );
-  const overdue = useMemo(
-    () =>
-      records.filter((r) => {
-        if (r.end_at === null || r.status !== "active") return false;
-        const d = new Date(r.end_at);
-        return !Number.isNaN(d.getTime()) && d.getTime() < now.getTime() && !isSameDay(d, now);
-      }),
-    [records, now],
-  );
-
   useEffect(() => {
     void loadWeather();
   }, [loadWeather]);
@@ -170,7 +142,7 @@ export default function HomeView() {
     wasEditing.current = editing;
   }, [editing, loadEvents, today]);
 
-  // —— 日程安排：窗口内全部事件（升序）+ 今日子集（统计卡）——
+  // —— 日程安排：窗口内全部事件（升序）——
   const allEvents = useMemo(
     () =>
       [...renderEvents]
@@ -178,12 +150,6 @@ export default function HomeView() {
         .sort((a: RecordT, b: RecordT) => (a.start_at ?? "").localeCompare(b.start_at ?? "")),
     [renderEvents],
   );
-  const todayEvents = useMemo(() => allEvents.filter((e) => eventOnDay(e, today)), [allEvents, today]);
-  const nextEvent = todayEvents.find((e) => {
-    if (e.data.all_day === true) return false;
-    const s = new Date(e.start_at ?? "");
-    return !Number.isNaN(s.getTime()) && s.getTime() >= now.getTime();
-  });
 
   // —— 按日分组（今天起 30 天；全天归开始日，定时按触及日）——
   const scheduleGroups = useMemo(() => {
@@ -332,73 +298,6 @@ export default function HomeView() {
           role="img"
           aria-label="首页装饰"
         />
-      </div>
-
-      {/* Stats */}
-      <div className={styles.stats}>
-        <button type="button" className={styles.stat} onClick={() => setView("today")}>
-          <div className={styles["stat-top"]}>
-            <span className={styles["stat-label"]}>今日任务</span>
-            <span className={`${styles["icon-box"]} ${styles.c1}`}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="17" height="17">
-                <path d="M3.5 6.5l2 2 3.5-4" /><path d="M11 7h9.5" />
-                <path d="M3.5 13l2 2 3.5-4" /><path d="M11 13.5h9.5" />
-                <path d="M3.5 19.5l2 2 3.5-4" /><path d="M11 20h9.5" />
-              </svg>
-            </span>
-          </div>
-          <div className={styles["stat-value"]}>{dueToday.length}</div>
-          <div className={styles["stat-sub"]}>
-            {overdue.length > 0 ? `${overdue.length} 项逾期` : "暂无逾期"}
-          </div>
-        </button>
-
-        <button type="button" className={styles.stat} onClick={() => setView("calendar")}>
-          <div className={styles["stat-top"]}>
-            <span className={styles["stat-label"]}>今日日程</span>
-            <span className={`${styles["icon-box"]} ${styles.c2}`}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="17" height="17">
-                <rect x="3.5" y="5" width="17" height="16" rx="2.5" />
-                <path d="M3.5 9.5h17" /><path d="M8 3v4M16 3v4" />
-              </svg>
-            </span>
-          </div>
-          <div className={styles["stat-value"]}>{todayEvents.length}</div>
-          <div className={styles["stat-sub"]}>
-            {nextEvent
-              ? `下一项 ${formatTime(nextEvent.start_at)}`
-              : todayEvents.length
-                ? "今日日程已过"
-                : "今日无日程"}
-          </div>
-        </button>
-
-        <div className={styles.stat}>
-          <div className={styles["stat-top"]}>
-            <span className={styles["stat-label"]}>待办笔记</span>
-            <span className={`${styles["icon-box"]} ${styles.c3}`}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="17" height="17">
-                <path d="M4 5a1 1 0 0 1 1-1h9l6 6v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z" />
-                <path d="M14 4v6h6" />
-              </svg>
-            </span>
-          </div>
-          <div className={styles["stat-value"]}>{NOTES_STAT.value}</div>
-          <div className={styles["stat-sub"]}>{NOTES_STAT.sub}</div>
-        </div>
-
-        <div className={styles.stat}>
-          <div className={styles["stat-top"]}>
-            <span className={styles["stat-label"]}>活跃项目</span>
-            <span className={`${styles["icon-box"]} ${styles.c4}`}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="17" height="17">
-                <path d="M3 7a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />
-              </svg>
-            </span>
-          </div>
-          <div className={styles["stat-value"]}>{PROJECTS_STAT.value}</div>
-          <div className={styles["stat-sub"]}>{PROJECTS_STAT.sub}</div>
-        </div>
       </div>
 
       {/* Content */}

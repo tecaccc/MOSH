@@ -3,7 +3,6 @@ import { Streamdown } from "streamdown";
 import "streamdown/styles.css";
 import { toolLabel, useAgentStore, type UiMessage } from "../state/agent";
 import { useAppStore } from "../state/store";
-import { useDialogStore } from "../state/dialog";
 import { toast } from "../state/toast";
 import { filesToAttachments, MAX_ATTACHMENTS } from "../lib/image";
 import { PERMISSION_MODES, type PermissionMode } from "../lib/types";
@@ -12,7 +11,7 @@ import styles from "./ChatPanel.module.css";
 /**
  * 助手聊天面板：消息区（用户纯文本气泡 / 助手 streamdown 渲染 + 工具卡片）
  * + 输入区（composer：自动增高 textarea + 底部工具条——模型选择、技能、MCP，
- * 参考 cherry-studio）+ 右侧会话侧栏（显隐开关在标题栏，删除支持）。
+ * 参考 cherry-studio）。会话仅存内存（重启清空），顶栏「+ 新会话」随时重开对话。
  */
 
 /** 工具卡片参数摘要（一行）。 */
@@ -235,14 +234,10 @@ export default function ChatPanel() {
   const error = useAgentStore((s) => s.error);
   const models = useAgentStore((s) => s.models);
   const selectedModel = useAgentStore((s) => s.selectedModel);
-  const sessions = useAgentStore((s) => s.sessions);
-  const currentSession = useAgentStore((s) => s.currentSession);
   const init = useAgentStore((s) => s.init);
   const send = useAgentStore((s) => s.send);
   const abort = useAgentStore((s) => s.abort);
   const newSession = useAgentStore((s) => s.newSession);
-  const openSession = useAgentStore((s) => s.openSession);
-  const deleteSession = useAgentStore((s) => s.deleteSession);
   const selectModel = useAgentStore((s) => s.selectModel);
   const skills = useAgentStore((s) => s.skills);
   const mcpServers = useAgentStore((s) => s.mcpServers);
@@ -250,7 +245,6 @@ export default function ChatPanel() {
   const selectPermissionMode = useAgentStore((s) => s.selectPermissionMode);
   const pendingApproval = useAgentStore((s) => s.pendingApproval);
   const decideApproval = useAgentStore((s) => s.decideApproval);
-  const chatSideVisible = useAppStore((s) => s.chatSideVisible);
   const openSettings = useAppStore((s) => s.openSettings);
 
   const [input, setInput] = useState("");
@@ -268,6 +262,19 @@ export default function ChatPanel() {
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages.length, messages.at(-1)?.text.length]);
+
+  // hero→对话态切换时 msgs 的 flex-grow/padding 有 0.45s 过渡，首条消息
+  // 加入瞬间容器尚在展开中，直接设 scrollTop 会落在中间态上；
+  // 监听过渡结束补一次滚动，确保最终停在底部。
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const scrollToEnd = () => {
+      el.scrollTop = el.scrollHeight;
+    };
+    el.addEventListener("transitionend", scrollToEnd);
+    return () => el.removeEventListener("transitionend", scrollToEnd);
+  }, []);
 
   // 全局拖拽兑底：拖到输入区之外时不让 WebView 导航到该文件（仅拦截默认行为，
   // 输入区内的 onDrop 正常接管）。
@@ -325,17 +332,6 @@ export default function ChatPanel() {
     await send(t, imgs);
   }
 
-  async function onDeleteSession(id: string, title: string) {
-    const ok = await useDialogStore.getState().confirm({
-      title: "删除会话",
-      message: `将删除会话「${title}」及其全部消息，删除后不可恢复。`,
-      danger: true,
-      confirmText: "删除",
-    });
-    if (!ok) return;
-    await deleteSession(id);
-  }
-
   const activeSkills = skills.filter((s) => s.active).length;
   const enabledMcp = mcpServers.filter((s) => s.enabled).length;
   // 首包等待：流式中但还没有任何流式文本气泡（LLM 首字前 / 工具执行间隙）。
@@ -343,7 +339,7 @@ export default function ChatPanel() {
     streaming && !messages.some((m) => m.streaming) && !pendingApproval;
 
   return (
-    <section className={`${styles.chat}${!chatSideVisible ? ` ${styles["side-hidden"]}` : ""}`}>
+    <section className={styles.chat}>
       <div className={styles.main}>
         {/* 顶栏：标题 + 当前模型 */}
         <div className={styles["chat-head"]}>
@@ -353,7 +349,14 @@ export default function ChatPanel() {
           ) : null}
           {activeSkills > 0 ? <span className={styles["head-chip"]}>技能 {activeSkills}</span> : null}
           {enabledMcp > 0 ? <span className={styles["head-chip"]}>MCP {enabledMcp}</span> : null}
-          <span className={styles["head-hint"]}>会话列表开关在右上窗口按钮旁</span>
+          <button
+            type="button"
+            className={styles["head-new"]}
+            onClick={newSession}
+            title="开始新会话（对话仅存内存，重启后清空）"
+          >
+            + 新会话
+          </button>
         </div>
 
         {configured === false ? (
@@ -370,16 +373,11 @@ export default function ChatPanel() {
           </div>
         ) : (
           <>
-            <div className={styles.msgs} ref={listRef}>
-              {messages.length === 0 ? (
-                <div className={styles.empty}>
-                  <div className={styles["empty-title"]}>有什么可以帮你安排？</div>
-                  <div className={styles["empty-sub"]}>
-                    试试：「明早十点开周会」「建个待办：交季度报告，下周五截止」「我今天有什么安排」；
-                    也可粘贴/上传图片提问（需视觉模型）
-                  </div>
-                </div>
-              ) : null}
+            {/* 舞台：空会话 hero（问候+输入框整组垂直居中，Codex 式）；
+                发首条消息后 spacers flex-grow 1→0、消息区 0→1 同步插值，
+                输入框组丝滑滑落到底部 */}
+            <div className={styles.stage} data-hero={messages.length === 0}>
+              <div className={styles.msgs} ref={listRef}>
               {messages.map((m) =>
                 m.role === "user" ? (
                   <div key={m.key} className={`${styles.row} ${styles["user-row"]}`}>
@@ -420,7 +418,12 @@ export default function ChatPanel() {
                   </div>
                 </div>
               ) : null}
-            </div>
+              </div>
+
+              {/* 下组：spacer → hero/错误/审批/输入框 → spacer。
+                hero 态时整组被两侧 spacer 夹在垂直居中（输入框跟着居中）；
+                发送后 spacers 收 0，整组自然滑落到舞台底部。 */}
+              <div className={styles.spacer} aria-hidden="true" />
 
             {error ? <div className={styles.err}>{error}</div> : null}
 
@@ -449,6 +452,15 @@ export default function ChatPanel() {
                 </div>
               </div>
             ) : null}
+
+            {/* hero：空会话问候（紧贴输入框上方，与之同组被夹在垂直居中） */}
+            <div className={styles.hero} aria-hidden={messages.length > 0}>
+              <div className={styles["hero-title"]}>有什么可以帮你安排？</div>
+              <div className={styles["hero-sub"]}>
+                试试：「明早十点开周会」「建个待办：交季度报告，下周五截止」「我今天有什么安排」；
+                也可粘贴/上传图片提问（需视觉模型）
+              </div>
+            </div>
 
             {/* 输入区（composer）：附件预览 + 自动增高 textarea + 底部工具条 */}
             <div className={styles.composer} onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
@@ -587,49 +599,12 @@ export default function ChatPanel() {
               {pop === "skills" ? <SkillsPopover onClose={() => setPop("none")} /> : null}
               {pop === "mcp" ? <McpPopover onClose={() => setPop("none")} /> : null}
             </div>
+
+              <div className={styles.spacer} aria-hidden="true" />
+            </div>
           </>
         )}
       </div>
-
-      {/* 会话侧栏（右侧；显隐由标题栏按钮控制） */}
-      {chatSideVisible ? (
-        <aside className={styles.side}>
-          <button type="button" className={styles.new} onClick={newSession}>+ 新会话</button>
-          <div className={styles["sess-label"]} title="会话仅保存在内存中，重启应用后清空">会话（重启清空）</div>
-          <div className={styles["sess-list"]}>
-            {sessions.map((s) => (
-              <div
-                key={s.session_id}
-                className={`${styles["sess-row"]}${s.session_id === currentSession ? ` ${styles.active}` : ""}`}
-              >
-                <button
-                  type="button"
-                  className={styles.sess}
-                  onClick={() => void openSession(s.session_id)}
-                  title={s.title}
-                >
-                  <span className={styles["sess-title"]}>{s.title}</span>
-                  <span className={styles["sess-count"]}>{s.message_count}</span>
-                </button>
-                <button
-                  type="button"
-                  className={styles["sess-del"]}
-                  aria-label={`删除会话 ${s.title}`}
-                  title="删除会话"
-                  onClick={() => void onDeleteSession(s.session_id, s.title)}
-                >
-                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6.5 7l1 13h9l1-13" />
-                  </svg>
-                </button>
-              </div>
-            ))}
-            {sessions.length === 0 ? (
-              <div className={styles["sess-empty"]}>暂无会话</div>
-            ) : null}
-          </div>
-        </aside>
-      ) : null}
     </section>
   );
 }

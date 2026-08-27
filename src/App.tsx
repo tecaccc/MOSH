@@ -91,6 +91,18 @@ export default function App() {
     void useSyncStore.getState().init();
   }, []);
 
+  // ⌘/Ctrl+B 折叠/展开侧边栏（与侧栏内按钮、浮动展开按钮同一状态）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        useAppStore.getState().toggleSidebar();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const calEditing = editingEventOf(calEvents, editingId) !== undefined;
   const editingEvent = editingEventOf(calEvents, editingId) ?? null;
   const todoEditing = selectedRecordOf(records, selectedId) !== undefined;

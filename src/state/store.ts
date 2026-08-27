@@ -51,19 +51,20 @@ interface AppState {
   /** 数据代次：AI 工具等外部变更后自增，视图靠它重载自己的事件窗口。 */
   dataVersion: number;
   currentView: View;
+  /** 侧栏是否折叠隐藏（UI 偏好，localStorage 持久化；⌘/Ctrl+B 或按钮切换）。 */
+  sidebarCollapsed: boolean;
   /** 当前编辑的 todo id；null=新建模式；undefined=编辑器关闭。 */
   selectedId: string | null | undefined;
-  /** AI 聊天历史侧栏显隐（标题栏按钮切换，ChatPanel 消费）。 */
-  chatSideVisible: boolean;
   /** 设置页深链目标（SettingsView 消费后清空）。 */
   settingsTarget: SettingsTarget | null;
 
   setView(view: View): void;
+  /** 折叠/展开左侧边栏（持久化到 localStorage）。 */
+  toggleSidebar(): void;
   /** 深链进设置：直接落到指定分区（与可选子面板）。 */
   openSettings(section: SettingsSection, pane?: SettingsPane): void;
   /** SettingsView 消费后清除目标。 */
   consumeSettingsTarget(): void;
-  toggleChatSide(): void;
   loadTodos(): Promise<void>;
   /** 外部变更（AI 工具/撤销等）后统一刷新：重载 todos + 自增 dataVersion。 */
   refreshData(): Promise<void>;
@@ -77,22 +78,42 @@ interface AppState {
   deleteRecord(id: string): Promise<void>;
 }
 
+/** 侧栏折叠偏好的持久化键（UI 层偏好，不入后端 config）。 */
+const SIDEBAR_COLLAPSED_KEY = "mosh:sidebar-collapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export const useAppStore = create<AppState>()((set) => ({
   records: [],
   dataVersion: 0,
   currentView: "home",
+  sidebarCollapsed: readSidebarCollapsed(),
   selectedId: undefined,
-  chatSideVisible: true,
   settingsTarget: null,
 
   setView: (view) => set({ currentView: view }),
+
+  toggleSidebar: () =>
+    set((s) => {
+      const next = !s.sidebarCollapsed;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        /* localStorage 不可用时仅本次会话生效 */
+      }
+      return { sidebarCollapsed: next };
+    }),
 
   openSettings: (section, pane) =>
     set({ currentView: "settings", settingsTarget: pane ? { section, pane } : { section } }),
 
   consumeSettingsTarget: () => set({ settingsTarget: null }),
-
-  toggleChatSide: () => set((s) => ({ chatSideVisible: !s.chatSideVisible })),
 
   loadTodos: async () => {
     const list = await listRecords({ kind: "todo" });
