@@ -25,8 +25,11 @@ interface ModelsState {
   defaultModel: AiDefaultModel | null;
   /** 首次加载是否完成(设置页/选择器空态区分「加载中」与「真没有」)。 */
   loaded: boolean;
+  /** 设置页当前编辑的 Provider id;null = 新增自定义草稿;undefined = 未选。 */
+  selectedProviderId: string | null | undefined;
 
   load(): Promise<void>;
+  selectProvider(id: string | null): void;
   upsertProvider(provider: AiProvider): Promise<AiProvider>;
   deleteProvider(providerId: string): Promise<void>;
   upsertModel(model: AiModel): Promise<void>;
@@ -40,6 +43,7 @@ export const useModelsStore = create<ModelsState>()((set, get) => ({
   models: [],
   defaultModel: null,
   loaded: false,
+  selectedProviderId: undefined,
 
   load: async () => {
     try {
@@ -56,15 +60,19 @@ export const useModelsStore = create<ModelsState>()((set, get) => ({
     }
   },
 
+  selectProvider: (id) => set({ selectedProviderId: id }),
+
   upsertProvider: async (provider) => {
     const saved = await aiUpsertProvider(provider);
     await get().load();
+    set({ selectedProviderId: saved.id });
     return saved;
   },
 
   deleteProvider: async (providerId) => {
     await aiDeleteProvider(providerId);
     await get().load();
+    set({ selectedProviderId: undefined });
   },
 
   upsertModel: async (model) => {

@@ -1,36 +1,19 @@
-import { useEffect, useRef, useState, type ComponentType } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getName, getTauriVersion, getVersion } from "@tauri-apps/api/app";
 import { openPath } from "@tauri-apps/plugin-opener";
-// 深路径引入单个图标（仅 12 家；barrel 的 ProviderIcon/ModelIcon 会拉全量 4MB+）。
-import Anthropic from "@lobehub/icons/es/Anthropic";
-import DeepSeek from "@lobehub/icons/es/DeepSeek";
-import Gemini from "@lobehub/icons/es/Gemini";
-import Groq from "@lobehub/icons/es/Groq";
-import Mistral from "@lobehub/icons/es/Mistral";
-import Moonshot from "@lobehub/icons/es/Moonshot";
-import Ollama from "@lobehub/icons/es/Ollama";
-import OpenAI from "@lobehub/icons/es/OpenAI";
-import OpenRouter from "@lobehub/icons/es/OpenRouter";
-import Qwen from "@lobehub/icons/es/Qwen";
-import XAI from "@lobehub/icons/es/XAI";
-import Zhipu from "@lobehub/icons/es/Zhipu";
+import { AiProviderColumn, AiSettingsPane } from "./AiSettings";
 import { McpPane, SkillsPane } from "./AgentToolsSettings";
 import Avatar from "./Avatar";
 import CityPicker from "./CityPicker";
 import NotifySettings from "./NotifySettings";
 import SyncSettings from "./SyncSettings";
 import {
-  deleteAiProvider,
   getCloseBehavior,
   getStorageInfo,
-  listAiModels,
-  listAiProviders,
-  saveAiProvider,
   setCloseBehavior as setCloseBehaviorIpc,
-  testAiConnection,
 } from "../lib/ipc";
 import { WEATHER_ICONS, weatherInfo, type WeatherIcon } from "../lib/weather-code";
-import type { AiConfig, CloseBehavior, StorageInfo } from "../lib/types";
+import type { CloseBehavior, StorageInfo } from "../lib/types";
 import { useAgentStore } from "../state/agent";
 import { useAppStore, type SettingsSection } from "../state/store";
 import { useProfileStore } from "../state/profile";
@@ -50,62 +33,12 @@ type AgentToolsPane = "skills" | "mcp";
 const inTauri = "__TAURI_INTERNALS__" in window;
 const round = (n: number): number => Math.round(n);
 
-/** 常用提供商名称 → 图标组件（lobe-icons 彩色版；未知 → undefined 用圆点兑底）。 */
-type IconComp = ComponentType<{ size?: number }>;
-const PROVIDER_ICON_RULES: [RegExp, IconComp][] = [
-  [/deepseek/i, DeepSeek.Color as IconComp],
-  // 无 Color 变体的用 mono 本尊（OpenAI/Groq 等品牌本身就是单色标志）。
-  [/openai|gpt/i, OpenAI as IconComp],
-  [/anthropic|claude/i, Anthropic as IconComp],
-  [/gemini|google/i, Gemini.Color as IconComp],
-  [/qwen|通义|alibaba|阿里/i, Qwen.Color as IconComp],
-  [/kimi|moonshot/i, Moonshot as IconComp],
-  [/zhipu|智谱|glm/i, Zhipu.Color as IconComp],
-  [/ollama/i, Ollama as IconComp],
-  [/openrouter/i, OpenRouter.Color as IconComp],
-  [/groq/i, Groq as IconComp],
-  [/mistral/i, Mistral.Color as IconComp],
-  [/xai|grok/i, XAI as IconComp],
-];
-
-function providerIconOf(name: string): IconComp | undefined {
-  for (const [re, Icon] of PROVIDER_ICON_RULES) {
-    if (re.test(name)) return Icon;
-  }
-  return undefined;
-}
-
-/** 官方预置提供商（固定区）：名称/接口地址有默认值，仅需填 API Key。 */
-interface BuiltinProvider {
-  /** 列表项显示名（亦为存储名）。 */
-  name: string;
-  base_url: string;
-  /** 预置默认模型（拉取列表失败/未拉取时的兑底）。 */
-  defaultModel: string;
-  icon: IconComp;
-}
-
-const BUILTIN_PROVIDERS: BuiltinProvider[] = [
-  {
-    name: "DeepSeek",
-    base_url: "https://api.deepseek.com/v1",
-    defaultModel: "deepseek-chat",
-    icon: DeepSeek.Color as IconComp,
-  },
-];
-
-function builtinOf(name: string): BuiltinProvider | undefined {
-  return BUILTIN_PROVIDERS.find((p) => p.name === name);
-}
-
 function WeatherIcon({ name }: { name: WeatherIcon }) {
   return (
     <span className={styles["pv-ico"]} dangerouslySetInnerHTML={{ __html: WEATHER_ICONS[name] }} />
   );
 }
 
-/** 选择状态：固定预置 `builtin:名称` / 自定义 `custom:名称` / null=新增自定义。 */
-type Selection = `builtin:${string}` | `custom:${string}` | null;
 
 /** 头像快捷表情预设。 */
 const PROFILE_EMOJIS = ["🦊", "🐼", "🐱", "🚀", "⭐", "🌙", "🌸", "🧋"];
@@ -138,34 +71,6 @@ export default function SettingsView() {
   const loadWeather = useWeatherStore((s) => s.loadWeather);
   const refreshWeather = useWeatherStore((s) => s.refreshWeather);
   const info = weather ? weatherInfo(weather.weather_code) : null;
-
-  // —— AI 模型配置（固定预置 + 自定义多提供商）——
-  const [providers, setProviders] = useState<AiConfig[]>([]);
-  /** 当前选中：{builtin:固定名} | {custom:自定义名} | null=新增自定义。 */
-  const [selection, setSelection] = useState<Selection>("builtin:DeepSeek");
-  const [aiName, setAiName] = useState("");
-  const [aiBase, setAiBase] = useState("");
-  const [aiKey, setAiKey] = useState("");
-  const [aiModel, setAiModel] = useState("");
-  const [aiLoaded, setAiLoaded] = useState(false);
-  const [aiSaving, setAiSaving] = useState(false);
-  const [aiTesting, setAiTesting] = useState(false);
-  const [aiFetchingModels, setAiFetchingModels] = useState(false);
-  const [aiModels, setAiModels] = useState<string[]>([]);
-
-  /** 当前选中的固定预置定义（未选中固定项时为 undefined）。 */
-  const curBuiltin = (() => {
-    if (!selection?.startsWith("builtin:")) return undefined;
-    return builtinOf(selection.slice("builtin:".length));
-  })();
-  /** 固定预置的已保存配置（未配置过 = undefined）。 */
-  const builtinCfg = curBuiltin
-    ? providers.find((p) => p.name === curBuiltin.name)
-    : undefined;
-  /** 自定义提供商 = 已保存列表中不属于官方预置的。 */
-  const customProviders = providers.filter(
-    (p) => !BUILTIN_PROVIDERS.some((b) => b.name === p.name),
-  );
 
   // —— AI 工具子菜单计数（技能启用数 / MCP 启用数）——
   const agentSkills = useAgentStore((s) => s.skills);
@@ -221,203 +126,11 @@ export default function SettingsView() {
     }
   }
 
-  /** 把固定预置载入表单：预置默认值 + 已保存的覆盖（地址/模型均可改）。 */
-  async function loadBuiltin(b: BuiltinProvider, list: AiConfig[]) {
-    const saved = list.find((p) => p.name === b.name);
-    setAiName(b.name);
-    // 地址/模型：优先已保存的（可能被改过），否则用官方默认。
-    setAiBase(saved?.base_url || b.base_url);
-    setAiKey(saved?.api_key ?? "");
-    const model = saved?.model || b.defaultModel;
-    setAiModel(model);
-    // 模型列表：已保存模型置顶；其余异步拉取失败静默。
-    setAiModels(model ? [model] : []);
-    try {
-      const fetched = await listAiModels(saved?.base_url || b.base_url, saved?.api_key ?? "");
-      setAiModels(fetched.length > 0 ? fetched : model ? [model] : []);
-    } catch {
-      /* 未填 Key 或网络失败 → 只留默认模型 */
-    }
-  }
-
-  /** 把自定义提供商载入表单。 */
-  function loadCustom(cfg: AiConfig | undefined) {
-    if (!cfg) {
-      setAiName("");
-      setAiBase("");
-      setAiKey("");
-      setAiModel("");
-      setAiModels([]);
-      return;
-    }
-    setAiName(cfg.name);
-    setAiBase(cfg.base_url);
-    setAiKey(cfg.api_key);
-    setAiModel(cfg.model);
-    setAiModels(cfg.model ? [cfg.model] : []);
-  }
-
-  async function loadAi() {
-    let list: AiConfig[] = [];
-    try {
-      list = await listAiProviders();
-    } catch {
-      list = [];
-    }
-    setProviders(list);
-    // 默认选中固定区第一项（DeepSeek）。
-    setSelection("builtin:DeepSeek");
-    await loadBuiltin(BUILTIN_PROVIDERS[0], list);
-    setAiLoaded(true);
-  }
-
   useEffect(() => {
     void loadWeather();
     void loadAbout();
-    void loadAi();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  async function selectBuiltin(name: string) {
-    const b = builtinOf(name);
-    if (!b) return;
-    setSelection(`builtin:${name}`);
-    await loadBuiltin(b, providers);
-  }
-
-  function selectCustom(name: string) {
-    setSelection(`custom:${name}`);
-    loadCustom(providers.find((p) => p.name === name));
-  }
-
-  function addProvider() {
-    setSelection(null);
-    loadCustom(undefined);
-  }
-
-  /** 保存：固定预置预填官方默认值（地址/模型可改）；自定义项全部必填。 */
-  async function onSaveAi() {
-    if (curBuiltin) {
-      // 固定预置：仅校验 API Key；地址/模型用表单值（预填过默认，可改）。
-      if (!aiKey.trim()) {
-        showToast(false, "请先填写 API Key");
-        return;
-      }
-      const base = aiBase.trim() || curBuiltin.base_url;
-      const model = aiModel.trim() || curBuiltin.defaultModel;
-      setAiSaving(true);
-      try {
-        await saveAiProvider({
-          name: curBuiltin.name,
-          base_url: base,
-          api_key: aiKey.trim(),
-          model,
-        });
-        showToast(true, `已保存 ${curBuiltin.name}`);
-        await loadAi();
-      } catch (e) {
-        showToast(false, e instanceof Error ? e.message : String(e));
-      } finally {
-        setAiSaving(false);
-      }
-      return;
-    }
-
-    // 自定义（新增或编辑）：全部必填。
-    if (!aiName.trim() || !aiBase.trim() || !aiKey.trim() || !aiModel.trim()) {
-      showToast(false, "自定义提供商需完整填写：名称、接口地址、API Key 与模型");
-      return;
-    }
-    setAiSaving(true);
-    try {
-      await saveAiProvider({
-        name: aiName.trim(),
-        base_url: aiBase.trim(),
-        api_key: aiKey.trim(),
-        model: aiModel.trim(),
-      });
-      showToast(true, "已保存");
-      await loadAi();
-      setSelection(`custom:${aiName.trim()}`);
-    } catch (e) {
-      showToast(false, e instanceof Error ? e.message : String(e));
-    } finally {
-      setAiSaving(false);
-    }
-  }
-
-  /** 删除：固定项删除后回到待配置态（列表中仍保留，图标不消失）；自定义项彻底移除。 */
-  async function onDeleteAi() {
-    const name = curBuiltin ? curBuiltin.name : (selection?.startsWith("custom:") ? selection.slice("custom:".length) : undefined);
-    if (!name) return;
-    setAiSaving(true);
-    try {
-      await deleteAiProvider(name);
-      showToast(true, "已删除");
-      await loadAi();
-      if (curBuiltin) {
-        // 固定项：留在该项，表单回到待配置态。
-        await loadBuiltin(curBuiltin, []);
-      } else {
-        setSelection("builtin:DeepSeek");
-        await loadBuiltin(BUILTIN_PROVIDERS[0], []);
-      }
-    } catch (e) {
-      showToast(false, e instanceof Error ? e.message : String(e));
-    } finally {
-      setAiSaving(false);
-    }
-  }
-
-  async function onFetchModels() {
-    // 统一用表单值（固定预置已预填官方地址，可改为中转）。
-    const base = aiBase;
-    if (!base.trim()) {
-      showToast(false, "请先填写接口地址");
-      return;
-    }
-    setAiFetchingModels(true);
-    try {
-      const models = await listAiModels(base, aiKey);
-      setAiModels(models);
-      if (models.length === 0) {
-        showToast(false, "未获取到模型，请检查接口地址与 API Key");
-      } else {
-        if (!aiModel.trim() || !models.includes(aiModel)) setAiModel(models[0]);
-        showToast(true, `已获取 ${models.length} 个模型`);
-      }
-    } catch (e) {
-      showToast(false, e instanceof Error ? e.message : String(e));
-    } finally {
-      setAiFetchingModels(false);
-    }
-  }
-
-  async function onTestAi() {
-    const base = aiBase;
-    const model = aiModel.trim() || curBuiltin?.defaultModel || "";
-    if (!base.trim()) {
-      showToast(false, "请先填写接口地址");
-      return;
-    }
-    if (curBuiltin && !aiKey.trim()) {
-      showToast(false, "请先填写 API Key");
-      return;
-    }
-    if (!model.trim()) {
-      showToast(false, "请先选择模型");
-      return;
-    }
-    setAiTesting(true);
-    try {
-      const reply = await testAiConnection(base, aiKey, model);
-      showToast(true, `连接成功：${model}${reply ? ` · ${reply}` : ""}`);
-    } catch (e) {
-      showToast(false, e instanceof Error ? e.message : String(e));
-    } finally {
-      setAiTesting(false);
-    }
-  }
 
   // —— 通用（关闭行为等） ——
   const [closeBehavior, setCloseBehavior] = useState<CloseBehavior>("exit");
@@ -477,7 +190,6 @@ export default function SettingsView() {
   }
 
   // 当前表单名称对应的提供商图标（输入 DeepSeek 即时亮起）；模型列表同用。
-  const AiNameIcon = providerIconOf(aiName);
 
   return (
     <section
@@ -659,74 +371,7 @@ export default function SettingsView() {
       {/* AI 分区：提供商栏紧贴设置栏（菜单栏-设置栏-提供商栏-配置区）。*/}
       {activeSection === "ai" ? (
         <aside className={styles["provider-col"]}>
-          <div className={styles["pl-label"]}>官方预置</div>
-          <div className={styles["pl-items"]}>
-            {BUILTIN_PROVIDERS.map((b) => {
-              const configured = providers.some((p) => p.name === b.name);
-              const active = selection === `builtin:${b.name}`;
-              return (
-                <button
-                  key={b.name}
-                  type="button"
-                  className={`${styles["pl-item"]}${active ? ` ${styles.active}` : ""}`}
-                  onClick={() => void selectBuiltin(b.name)}
-                >
-                  <span className={styles["pl-icon"]}>
-                    <b.icon size={18} />
-                  </span>
-                  <span className={styles["pl-name"]}>{b.name}</span>
-                  {configured ? (
-                    <span className={styles["pl-done"]} title="已配置">✓</span>
-                  ) : (
-                    <span className={styles["pl-pending"]}>待配置</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className={styles["pl-label"]}>
-            自定义
-            <span className={styles["pl-label-sub"]}>任意 OpenAI 兼容端点</span>
-          </div>
-          <div className={styles["pl-items"]}>
-            {customProviders.map((p) => {
-              const Icon = providerIconOf(p.name);
-              return (
-                <button
-                  key={p.name}
-                  type="button"
-                  className={`${styles["pl-item"]}${selection === `custom:${p.name}` ? ` ${styles.active}` : ""}`}
-                  onClick={() => selectCustom(p.name)}
-                >
-                  {Icon ? (
-                    <span className={styles["pl-icon"]}>
-                      <Icon size={18} />
-                    </span>
-                  ) : (
-                    <span className={styles["pl-dot"]} />
-                  )}
-                  <span className={styles["pl-name"]}>{p.name}</span>
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              className={`${styles["pl-add"]}${selection === null ? ` ${styles.active}` : ""}`}
-              onClick={addProvider}
-              title="添加自定义 OpenAI 兼容提供商"
-            >
-              <span className={styles["pl-add-ico"]}>
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-              </span>
-              <span className={styles["pl-name"]}>添加自定义提供商</span>
-            </button>
-            {customProviders.length === 0 && selection === null ? (
-              <div className={styles["pl-empty"]}>新提供商需完整填写名称、地址、Key 与模型</div>
-            ) : null}
-          </div>
+          <AiProviderColumn />
         </aside>
       ) : null}
 
@@ -904,238 +549,14 @@ export default function SettingsView() {
             <div className={styles["content-body"]}>
               <div className={styles["content-header"]}>
                 <div className={styles["content-title"]}>AI 模型</div>
-                <div className={styles["content-desc"]}>配置模型提供商，支持任意 OpenAI 兼容接口。</div>
-              </div>
-
-              <div className={styles.sgroup}>
-                {curBuiltin ? (
-                  /* —— 固定预置：预填官方默认值，地址/模型/Key 均可修改（如走中转）—— */
-                  <>
-                    <div className={styles.srow}>
-                      <div className={styles["srow-label"]}>
-                        <span className={styles["srow-name"]}>
-                          <span className={styles["pl-icon"]}>
-                            <curBuiltin.icon size={18} />
-                          </span>
-                          {curBuiltin.name}
-                        </span>
-                        <span className={styles["srow-hint"]}>
-                          官方预置已填默认值；接口地址、模型与 Key 均可按需修改（如兼容中转）
-                          {builtinCfg ? " · 已配置" : " · 待配置"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className={styles.sdivider} />
-
-                    <div className={styles.srow}>
-                      <div className={styles["srow-label"]}>
-                        <span className={styles["srow-name"]}>API Key *</span>
-                        <span className={styles["srow-hint"]}>
-                          前往 platform.deepseek.com 创建；仅存本地数据库
-                        </span>
-                      </div>
-                      <input
-                        className={styles["srow-input"]}
-                        type="password"
-                        value={aiKey}
-                        onChange={(e) => setAiKey(e.target.value)}
-                        placeholder={builtinCfg?.api_key ? "已保存（可覆盖）" : "sk-…"}
-                        autoComplete="off"
-                      />
-                    </div>
-
-                    <div className={styles.sdivider} />
-
-                    <div className={styles.srow}>
-                      <div className={styles["srow-label"]}>
-                        <span className={styles["srow-name"]}>接口地址</span>
-                        <span className={styles["srow-hint"]}>
-                          预填官方地址，可改为兼容中转端点
-                        </span>
-                      </div>
-                      <input
-                        className={styles["srow-input"]}
-                        value={aiBase}
-                        onChange={(e) => setAiBase(e.target.value)}
-                        placeholder={curBuiltin.base_url}
-                      />
-                    </div>
-
-                    <div className={styles.sdivider} />
-
-                    <div className={styles.srow}>
-                      <div className={styles["srow-label"]}>
-                        <span className={styles["srow-name"]}>模型</span>
-                        <span className={styles["srow-hint"]}>
-                          预填默认模型，可拉取列表选择或手动填写
-                        </span>
-                      </div>
-                      <div className={styles["srow-control"]}>
-                        <input
-                          className={styles["srow-input"]}
-                          value={aiModel}
-                          onChange={(e) => setAiModel(e.target.value)}
-                          placeholder={curBuiltin.defaultModel}
-                        />
-                        <button
-                          type="button"
-                          className={styles["fetch-btn"]}
-                          onClick={() => void onFetchModels()}
-                          disabled={aiFetchingModels || !aiBase.trim()}
-                          title={!aiBase.trim() ? "先填写接口地址" : undefined}
-                        >
-                          {aiFetchingModels ? "获取中…" : "获取模型列表"}
-                        </button>
-                      </div>
-                    </div>
-
-                    {aiModels.length > 0 ? (
-                      <div className={styles["model-list"]}>
-                        {aiModels.map((m) => (
-                          <button
-                            key={m}
-                            type="button"
-                            className={`${styles["model-item"]}${aiModel === m ? ` ${styles.active}` : ""}`}
-                            onClick={() => setAiModel(m)}
-                          >
-                            <span className={styles["pl-icon"]}>
-                              <curBuiltin.icon size={16} />
-                            </span>
-                            <span className={styles["model-item-name"]}>{m}</span>
-                            {aiModel === m ? <span className={styles["model-check"]}>✓</span> : null}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </>
-                ) : (
-                  /* —— 自定义提供商：名称/地址/Key/模型全部必填 —— */
-                  <>
-                    <div className={styles.srow}>
-                      <div className={styles["srow-label"]}>
-                        <span className={styles["srow-name"]}>提供商名称 *</span>
-                        <span className={styles["srow-hint"]}>
-                          自定义显示名，如「我的中转」；命中已知品牌会显示对应图标
-                        </span>
-                      </div>
-                      <div className={styles["srow-control"]}>
-                        {AiNameIcon ? (
-                          <span className={styles["pl-icon"]}>
-                            <AiNameIcon size={18} />
-                          </span>
-                        ) : null}
-                        <input
-                          className={styles["srow-input"]}
-                          value={aiName}
-                          onChange={(e) => setAiName(e.target.value)}
-                          placeholder="My Provider"
-                        />
-                      </div>
-                    </div>
-
-                    <div className={styles.sdivider} />
-
-                    <div className={styles.srow}>
-                      <div className={styles["srow-label"]}>
-                        <span className={styles["srow-name"]}>接口地址 *</span>
-                        <span className={styles["srow-hint"]}>
-                          OpenAI 兼容端点，如 https://api.example.com/v1
-                        </span>
-                      </div>
-                      <input
-                        className={styles["srow-input"]}
-                        value={aiBase}
-                        onChange={(e) => setAiBase(e.target.value)}
-                        placeholder="https://api.example.com/v1"
-                      />
-                    </div>
-
-                    <div className={styles.sdivider} />
-
-                    <div className={styles.srow}>
-                      <div className={styles["srow-label"]}>
-                        <span className={styles["srow-name"]}>API Key *</span>
-                        <span className={styles["srow-hint"]}>仅存本地数据库，不上传；密文显示</span>
-                      </div>
-                      <input
-                        className={styles["srow-input"]}
-                        type="password"
-                        value={aiKey}
-                        onChange={(e) => setAiKey(e.target.value)}
-                        placeholder="sk-…"
-                        autoComplete="off"
-                      />
-                    </div>
-
-                    <div className={styles.sdivider} />
-
-                    <div className={styles.srow}>
-                      <div className={styles["srow-label"]}>
-                        <span className={styles["srow-name"]}>模型 *</span>
-                        <span className={styles["srow-hint"]}>
-                          拉取列表后选择，或手动填入模型 id
-                        </span>
-                      </div>
-                      <div className={styles["srow-control"]}>
-                        {aiModels.length > 0 ? (
-                          <select
-                            className={styles["srow-select"]}
-                            value={aiModels.includes(aiModel) ? aiModel : ""}
-                            onChange={(e) => setAiModel(e.target.value)}
-                          >
-                            <option value="" disabled>
-                              选择模型…
-                            </option>
-                            {aiModels.map((m) => (
-                              <option key={m} value={m}>
-                                {m}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <button
-                            type="button"
-                            className={styles["fetch-btn"]}
-                            onClick={() => void onFetchModels()}
-                            disabled={aiFetchingModels}
-                          >
-                            {aiFetchingModels ? "获取中…" : "获取模型列表"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    {aiModel && !aiModels.includes(aiModel) ? (
-                      <div className={styles["model-current"]}>当前：{aiModel}</div>
-                    ) : null}
-                  </>
-                )}
-
-                <div className={styles.sdivider} />
-
-                  <div className={styles["ai-actions"]}>
-                    {/* 删除：固定项仅已配置时显示（删后回到待配置态，条目仍在）；自定义项已选中时显示。 */}
-                    {(curBuiltin && builtinCfg) || selection?.startsWith("custom:") ? (
-                      <button
-                        type="button"
-                        className={`${styles["ai-btn"]} ${styles.danger}`}
-                        onClick={() => void onDeleteAi()}
-                        disabled={aiSaving}
-                      >
-                        {curBuiltin ? "清除配置" : "删除"}
-                      </button>
-                    ) : null}
-                    <button type="button" className={styles["ai-btn"]} onClick={() => void onSaveAi()} disabled={aiSaving || !aiLoaded}>
-                      {aiSaving ? "保存中…" : "保存"}
-                    </button>
-                    <button type="button" className={`${styles["ai-btn"]} ${styles.primary}`} onClick={() => void onTestAi()} disabled={aiTesting || !aiLoaded}>
-                      {aiTesting ? "测试中…" : "测试连接"}
-                    </button>
-                  </div>
+                <div className={styles["content-desc"]}>
+                  提供商与模型实体管理：预置一键添加、任意 OpenAI 兼容端点、同步模型列表、设置默认模型。
                 </div>
               </div>
+              <AiSettingsPane />
             </div>
-          ) : null}
+          </div>
+        ) : null}
 
         {activeSection === "aitools" ? (
           <div className={styles["content-scroll"]}>
