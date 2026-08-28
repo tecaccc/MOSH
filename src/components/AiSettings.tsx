@@ -14,6 +14,7 @@ import {
   type ModelCapability,
 } from "../lib/aiIcons";
 import { PROVIDER_PRESETS, presetOf, type ProviderPreset } from "../lib/aiPresets";
+import { useDialogStore } from "../state/dialog";
 import { testAiConnection } from "../lib/ipc";
 import type { AiModel, AiProvider } from "../lib/types";
 import { modelDisplayName, useModelsStore } from "../state/models";
@@ -267,10 +268,25 @@ export function AiSettingsPane() {
 
   async function onDelete() {
     if (!provider) return;
-    if (!window.confirm(`删除提供商「${provider.name}」及其全部模型?`)) return;
+    const ok = await useDialogStore.getState().confirm({
+      title: "删除提供商",
+      message: `将删除「${provider.name}」及其全部模型（含已保存配置），不可恢复。`,
+      danger: true,
+      confirmText: "删除",
+    });
+    if (!ok) return;
     try {
       await deleteProvider(provider.id);
       toast.success("已删除");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** 默认模型切换(选择器/模型行共用):失败可见，不静默。 */
+  async function onDefaultModelChange(id: string) {
+    try {
+      await setDefaultModel(id);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
@@ -355,7 +371,7 @@ export function AiSettingsPane() {
           <Row label="默认模型" hint="聊天输入框未临时切换时使用;可在聊天框内随时更换">
             <AiModelSelector
               value={defaultModel?.model.id ?? null}
-              onChange={(id) => void setDefaultModel(id)}
+              onChange={(id) => void onDefaultModelChange(id)}
               size={16}
             />
           </Row>
@@ -447,6 +463,47 @@ function ModelRow({
     setEditing(true);
   };
 
+  // 启停/置顶/设默认：失败可见（基线模式：try/catch + toast.error）。
+  async function onToggleEnabled(next: boolean) {
+    try {
+      await upsertModel({ ...model, enabled: next });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function onTogglePin() {
+    try {
+      await upsertModel({ ...model, pinned: !model.pinned });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function onSetDefault() {
+    try {
+      await setDefaultModel(model.id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function onDeleteModel() {
+    const ok = await useDialogStore.getState().confirm({
+      title: "删除模型",
+      message: `将删除模型「${modelDisplayName(model)}」（${model.model_id}），不可恢复。`,
+      danger: true,
+      confirmText: "删除",
+    });
+    if (!ok) return;
+    try {
+      await deleteModel(model.id);
+      toast.success("已删除");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const saveEdit = async () => {
     try {
       await upsertModel({
@@ -476,7 +533,7 @@ function ModelRow({
           type="button"
           className={`${styles.modelName} ${isDefault ? styles.modelDefault : ""}`}
           title={isDefault ? "当前默认模型,点击可查看" : "设为默认模型"}
-          onClick={() => void setDefaultModel(model.id)}
+          onClick={() => void onSetDefault()}
         >
           {modelDisplayName(model)}
           {isDefault ? <span className={styles.defaultBadge}>默认</span> : null}
@@ -495,14 +552,14 @@ function ModelRow({
           <input
             type="checkbox"
             checked={model.enabled}
-            onChange={(e) => void upsertModel({ ...model, enabled: e.target.checked })}
+            onChange={(e) => void onToggleEnabled(e.target.checked)}
           />
         </label>
         <button
           type="button"
           className={styles.miniBtn}
           title={model.pinned ? "取消置顶" : "置顶"}
-          onClick={() => void upsertModel({ ...model, pinned: !model.pinned })}
+          onClick={() => void onTogglePin()}
         >
           {model.pinned ? "★" : "☆"}
         </button>
@@ -513,9 +570,7 @@ function ModelRow({
           type="button"
           className={`${styles.miniBtn} ${styles.dangerText}`}
           title="删除"
-          onClick={() => {
-            if (window.confirm(`删除模型 ${modelDisplayName(model)}?`)) void deleteModel(model.id);
-          }}
+          onClick={() => void onDeleteModel()}
         >
           🗑
         </button>

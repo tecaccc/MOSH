@@ -8,6 +8,7 @@ import { AiEntityIcon, CAPABILITY_LABELS, effectiveCapabilities, type ModelCapab
 import type { AiModel, AiProvider } from "../lib/types";
 import { useAppStore } from "../state/store";
 import { modelDisplayName, selectChatModels, useModelsStore } from "../state/models";
+import { toast } from "../state/toast";
 import { useEffect, useMemo, useRef, useState } from "react";
 import styles from "./ModelSelector.module.css";
 
@@ -124,7 +125,7 @@ export default function AiModelSelector({
     try {
       await upsertModel({ ...m, pinned: !m.pinned });
     } catch (e) {
-      console.error("[models] toggle pin failed:", e);
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   };
 

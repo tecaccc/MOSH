@@ -356,6 +356,15 @@ export default function ChatPanel() {
     await send(t, imgs);
   }
 
+  /** 切换默认模型：失败可见，不静默（与设置页同模式）。 */
+  async function onModelChange(id: string) {
+    try {
+      await setDefaultModel(id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const activeSkills = skills.filter((s) => s.active).length;
   const enabledMcp = mcpServers.filter((s) => s.enabled).length;
   // 首包等待：流式中但还没有任何流式文本气泡（LLM 首字前 / 工具执行间隙）。
@@ -532,7 +541,7 @@ export default function ChatPanel() {
                   {configured ? (
                     <AiModelSelector
                       value={defaultModel?.model.id ?? null}
-                      onChange={(id) => void setDefaultModel(id)}
+                      onChange={(id) => void onModelChange(id)}
                       placement="up"
                       size={14}
                       triggerClassName={styles["model-select"]}
