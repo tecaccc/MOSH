@@ -43,11 +43,11 @@
 - [x] `pnpm check`(tsc)+ `npm run build`(vite)全绿;`cargo test -p mosh-core` 140 通过
 - [x] 包体积评估:基线 1344.79 kB → 1552.30 kB(+208 kB,26 家图标深路径;懒加载列后续)
 
-## 回归红线(待开发机人工验证)
+## 回归红线(已验证)
 
-- [ ] 旧 `ai_providers`/`ai_model` JSON 用户升级后不丢配置、能聊天(**需真机验证迁移**)
-- [ ] 非 Tauri 环境(纯 vite dev)不崩溃(agent/models store 失败静默置空)
-- [ ] `cargo check -p mosh` + `cargo test` 在 glib ≥ 2.70 环境通过
+- [x] 旧 `ai_providers`/`ai_model` JSON 用户升级后不丢配置、能聊天(开发机真机验证迁移 ✓)
+- [x] 非 Tauri 环境(纯 vite dev)不崩溃(agent/models store 失败静默置空)
+- [x] `cargo check -p mosh` + `cargo test` 在 glib ≥ 2.70 环境通过(开发机验证 ✓)
 
 ## 后续任务候选(不在本期)
 
