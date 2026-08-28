@@ -338,6 +338,8 @@ export interface AgentMessage {
   tool_result: string | null;
   /** 图片附件（data URL；仅 user 行可非空，旧数据无此字段 → 空）。 */
   images: string[] | null;
+  /** 生成该条 assistant 消息的模型 UniqueModelId（其余角色为 null）。 */
+  model: string | null;
   created_at: string;
 }
 
@@ -350,7 +352,7 @@ export interface AgentSessionSummary {
 
 /** `agent://*` 事件载荷（serde tag="type"；前端按事件名分发，type 字段冗余校验用）。 */
 export type AgentEventPayload =
-  | { type: "start"; session_id: string; turn_id: string }
+  | { type: "start"; session_id: string; turn_id: string; model_id?: string }
   | { type: "delta"; turn_id: string; text: string }
   | { type: "tool"; turn_id: string; tool: string; args: unknown; ok: boolean; result: unknown }
   | {

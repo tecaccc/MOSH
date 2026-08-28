@@ -47,7 +47,7 @@
 .popover {
   position: absolute;
   left: 0;
-  bottom: calc(100% + 6px);
+  top: calc(100% + 6px);
   z-index: 60;
   width: 320px;
   max-height: 380px;
@@ -59,9 +59,9 @@
   box-shadow: 0 8px 28px rgb(0 0 0 / 14%);
 }
 
-.dropUp {
-  bottom: auto;
-  top: calc(100% + 6px);
+.placeUp {
+  top: auto;
+  bottom: calc(100% + 6px);
 }
 
 .search {

@@ -39,8 +39,8 @@ export interface AiModelSelectorProps {
   onChange: (uniqueId: string) => void;
   /** 触发按钮里的图标尺寸。 */
   size?: number;
-  /** 弹层锚定:chat 工具条在上方弹,设置页向下弹。 */
-  dropUp?: boolean;
+  /** 弹层锄向:"up" 向上弹(聊天工具条,输入框下方),"down" 向下弹(设置页)。 */
+  placement?: "up" | "down";
   disabled?: boolean;
   /** 触发按钮额外类名(场景微调宽度/背景)。 */
   triggerClassName?: string;
@@ -50,7 +50,7 @@ export default function AiModelSelector({
   value,
   onChange,
   size = 18,
-  dropUp = false,
+  placement = "down",
   disabled = false,
   triggerClassName = "",
 }: AiModelSelectorProps) {
@@ -154,7 +154,7 @@ export default function AiModelSelector({
       </button>
 
       {open ? (
-        <div className={`${styles.popover} ${dropUp ? styles.dropUp : ""}`} role="listbox">
+        <div className={`${styles.popover} ${placement === "up" ? styles.placeUp : ""}`} role="listbox">
           <input
             className={styles.search}
             type="text"

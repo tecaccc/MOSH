@@ -14,15 +14,14 @@ import {
   agentApprove,
   agentSend as ipcSend,
   deleteRecord as ipcDeleteRecord,
-  getAiConfig,
   getPermissionMode,
-  listAiModels,
   listMcpServers,
   listSkills,
   setMcpEnabled,
   setPermissionMode,
   setSkillActive,
 } from "../lib/ipc";
+import { useModelsStore } from "./models";
 import type {
   AgentEventPayload,
   McpServerConfig,
@@ -50,6 +49,8 @@ export interface UiMessage {
   text: string;
   /** 图片附件（data URL；仅 user 消息）。 */
   images?: string[];
+  /** 生成该条回复的模型 UniqueModelId(assistant 气泡展示用)。 */
+  modelId?: string;
   tool?: string;
   args?: unknown;
   result?: unknown;
@@ -96,8 +97,6 @@ interface AgentState {
   /** null = 尚未探测；false = 未配置；true = 已配置。 */
   configured: boolean | null;
   error: string | null;
-  models: string[];
-  selectedModel: string;
   /** 技能（含启用状态；聊天工具条/设置页共用）。 */
   skills: SkillInfo[];
   /** MCP 服务器列表。 */
@@ -111,7 +110,6 @@ interface AgentState {
   newSession(): void;
   send(text: string, images?: string[]): Promise<void>;
   abort(): Promise<void>;
-  selectModel(m: string): void;
   undoCreate(m: UiMessage): Promise<void>;
   loadChatTools(): Promise<void>;
   toggleSkill(id: string, active: boolean): Promise<void>;
@@ -126,6 +124,8 @@ let activeTurnSession: string | null = null;
 let lastTurnSession: string | null = null;
 /** 当前流式气泡在 messages 中的 key。 */
 let streamingKey: string | null = null;
+/** 当前轮使用的模型 UniqueModelId(start 事件携带;气泡标识用)。 */
+let activeTurnModel: string | null = null;
 let listenersBound = false;
 let seq = 0;
 const nextKey = (): string => `m${++seq}`;
@@ -153,8 +153,6 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   currentSession: "",
   configured: null,
   error: null,
-  models: [],
-  selectedModel: "",
   skills: [],
   mcpServers: [],
   permissionMode: "auto",
@@ -163,17 +161,9 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   /** 初始化：读配置 + 可选模型 + 技能/MCP + 绑定事件（幂等）。 */
   init: async () => {
     try {
-      const cfg = await getAiConfig();
-      set({ configured: cfg !== null });
-      if (cfg) {
-        set({ selectedModel: cfg.model });
-        try {
-          const models = await listAiModels(cfg.base_url, cfg.api_key);
-          set({ models: models.length > 0 ? models : [cfg.model] });
-        } catch {
-          set({ models: [cfg.model] });
-        }
-      }
+      // 实体 store(08-28-ai-model-management):providers/models/defaultModel 一次拉齐。
+      await useModelsStore.getState().load();
+      set({ configured: useModelsStore.getState().defaultModel !== null });
     } catch {
       set({ configured: false });
     }
@@ -193,6 +183,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
         if (e.payload.type === "start") {
           activeTurnSession = e.payload.session_id;
           lastTurnSession = activeTurnSession;
+          activeTurnModel = e.payload.model_id ?? null;
           if (activeTurnSession === get().currentSession) set({ streaming: true });
         }
       });
@@ -203,10 +194,11 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
         // 追加到当前流式气泡；不存在则新建。
         if (!streamingKey) {
           streamingKey = nextKey();
+          const modelId = activeTurnModel ?? undefined;
           set((s) => ({
             messages: [
               ...s.messages,
-              { key: streamingKey!, role: "assistant", text: "", streaming: true },
+              { key: streamingKey!, role: "assistant", text: "", streaming: true, modelId },
             ],
           }));
         }
@@ -350,7 +342,12 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       ],
     }));
     try {
-      await ipcSend(get().currentSession, t, get().selectedModel, imgs.length > 0 ? imgs : undefined);
+      await ipcSend(
+        get().currentSession,
+        t,
+        useModelsStore.getState().defaultModel?.model.id ?? "",
+        imgs.length > 0 ? imgs : undefined,
+      );
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
@@ -366,8 +363,6 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       }
     }
   },
-
-  selectModel: (m) => set({ selectedModel: m }),
 
   /** 撤销创建类工具（软删记录 + 卡片标记）。 */
   undoCreate: async (m) => {

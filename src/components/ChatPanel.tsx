@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import "streamdown/styles.css";
+import { AiEntityIcon } from "../lib/aiIcons";
+import { parseUniqueModelId } from "../lib/types";
 import { toolLabel, useAgentStore, type UiMessage } from "../state/agent";
+import { findModelWithProvider, modelDisplayName, useModelsStore } from "../state/models";
 import { useAppStore } from "../state/store";
 import { toast } from "../state/toast";
 import { filesToAttachments, MAX_ATTACHMENTS } from "../lib/image";
 import { PERMISSION_MODES, type PermissionMode } from "../lib/types";
 import styles from "./ChatPanel.module.css";
+import AiModelSelector from "./ModelSelector";
 
 /**
  * 助手聊天面板：消息区（用户纯文本气泡 / 助手 streamdown 渲染 + 工具卡片）
@@ -68,6 +72,27 @@ function prettyJson(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+/** 助手气泡头部模型标识:小图标 + 名称(模型可能已删,回退解析 id 段)。 */
+function BubbleModelTag({ modelId }: { modelId: string }) {
+  const providers = useModelsStore((s) => s.providers);
+  const models = useModelsStore((s) => s.models);
+  const hit = findModelWithProvider(providers, models, modelId);
+  const parsed = parseUniqueModelId(modelId);
+  const label = hit ? modelDisplayName(hit.model) : (parsed?.modelId ?? modelId);
+  return (
+    <span className={styles["bubble-model"]} title={modelId}>
+      <AiEntityIcon
+        modelId={hit?.model.model_id}
+        providerId={hit?.provider.id}
+        presetId={hit?.provider.preset_id ?? undefined}
+        providerName={hit?.provider.name}
+        size={12}
+      />
+      {label}
+    </span>
+  );
 }
 
 function ToolCard({ m }: { m: UiMessage }) {
@@ -232,13 +257,12 @@ export default function ChatPanel() {
   const streaming = useAgentStore((s) => s.streaming);
   const configured = useAgentStore((s) => s.configured);
   const error = useAgentStore((s) => s.error);
-  const models = useAgentStore((s) => s.models);
-  const selectedModel = useAgentStore((s) => s.selectedModel);
   const init = useAgentStore((s) => s.init);
   const send = useAgentStore((s) => s.send);
   const abort = useAgentStore((s) => s.abort);
   const newSession = useAgentStore((s) => s.newSession);
-  const selectModel = useAgentStore((s) => s.selectModel);
+  const defaultModel = useModelsStore((s) => s.defaultModel);
+  const setDefaultModel = useModelsStore((s) => s.setDefaultModel);
   const skills = useAgentStore((s) => s.skills);
   const mcpServers = useAgentStore((s) => s.mcpServers);
   const permissionMode = useAgentStore((s) => s.permissionMode);
@@ -344,8 +368,16 @@ export default function ChatPanel() {
         {/* 顶栏：标题 + 当前模型 */}
         <div className={styles["chat-head"]}>
           <span className={styles["chat-title"]}>AI 助手</span>
-          {configured && selectedModel ? (
-            <span className={styles["head-model"]}>{selectedModel}</span>
+          {configured && defaultModel ? (
+            <span className={styles["head-model"]} title={defaultModel.model.id}>
+              <AiEntityIcon
+                modelId={defaultModel.model.model_id}
+                providerId={defaultModel.provider.id}
+                presetId={defaultModel.provider.preset_id ?? undefined}
+                size={14}
+              />
+              {modelDisplayName(defaultModel.model)}
+            </span>
           ) : null}
           {activeSkills > 0 ? <span className={styles["head-chip"]}>技能 {activeSkills}</span> : null}
           {enabledMcp > 0 ? <span className={styles["head-chip"]}>MCP {enabledMcp}</span> : null}
@@ -395,6 +427,7 @@ export default function ChatPanel() {
                 ) : m.role === "assistant" ? (
                   <div key={m.key} className={`${styles.row} ${styles["bot-row"]}`}>
                     <div className={`${styles.bubble} ${styles.bot}`}>
+                      {m.modelId ? <BubbleModelTag modelId={m.modelId} /> : null}
                       <Streamdown
                         parseIncompleteMarkdown={m.streaming === true}
                         animated={false}
@@ -497,16 +530,13 @@ export default function ChatPanel() {
               <div className={styles["toolbar"]}>
                 <div className={styles["tool-left"]}>
                   {configured ? (
-                    <select
-                      className={styles["model-select"]}
-                      value={selectedModel}
-                      onChange={(e) => selectModel(e.currentTarget.value)}
-                      title="选择模型"
-                    >
-                      {models.map((m) => (
-                        <option key={m} value={m}>{m}</option>
-                      ))}
-                    </select>
+                    <AiModelSelector
+                      value={defaultModel?.model.id ?? null}
+                      onChange={(id) => void setDefaultModel(id)}
+                      placement="up"
+                      size={14}
+                      triggerClassName={styles["model-select"]}
+                    />
                   ) : null}
 
                   <select

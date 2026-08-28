@@ -356,7 +356,6 @@ export function AiSettingsPane() {
             <AiModelSelector
               value={defaultModel?.model.id ?? null}
               onChange={(id) => void setDefaultModel(id)}
-              dropUp={false}
               size={16}
             />
           </Row>
