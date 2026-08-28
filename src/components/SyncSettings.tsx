@@ -52,6 +52,7 @@ export default function SyncSettings() {
       setRegion(config.region);
       setBucket(config.bucket);
       setAccessKey(config.access_key);
+      setSecretKey(config.secret_key ?? "");
       setAddressing(config.addressing || "virtual");
       setTimeout(String(config.timeout_secs || 30));
       setTlsVerify(config.tls_verify !== false);
@@ -73,7 +74,9 @@ export default function SyncSettings() {
         secret_key: secretKey || null, addressing,
         timeout_secs: parsedTimeout, tls_verify: tlsVerify,
       });
-      setSecretKey("");
+      // 保存后 store 已拿到新 config(syncConfigure 返回),回填 secret:
+      // 旧实现清空导致小眼睛对空输入无效(TODO-List BUG)。
+      setSecretKey(useSyncStore.getState().config?.secret_key ?? "");
     } catch { /* store 已 toast */ }
   };
 
@@ -198,13 +201,13 @@ export default function SyncSettings() {
           <div className={styles.srow}>
             <div className={styles["srow-label"]}>
               <span className={styles["srow-name"]}>SecretKey</span>
-              <span className={styles["srow-hint"]}>{config?.has_secret ? "已保存；留空则保持不变" : "对象存储访问密钥"}</span>
+              <span className={styles["srow-hint"]}>{config?.has_secret ? "已保存；清空留白保存则保持不变，小眼睛可查看" : "对象存储访问密钥"}</span>
             </div>
             <SecretInput
               inputClassName={styles["srow-input"]}
               value={secretKey}
               onChange={(e) => setSecretKey(e.currentTarget.value)}
-              placeholder={config?.has_secret ? "••••••••••••" : ""}
+              placeholder={config?.has_secret ? "留空保持原密钥" : "对象存储访问密钥"}
             />
           </div>
           <div className={styles.sdivider} />

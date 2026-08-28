@@ -1615,66 +1615,13 @@ fn spawn_sync_lifecycle(app: tauri::AppHandle) {
     });
 }
 
-/// 同步配置回显（不含 secret）。
-#[derive(Debug, Clone, serde::Serialize)]
-struct SyncConfigInfo {
-    enabled: bool,
-    /// endpoint/region/bucket/access_key 已填（secret 单独探针）。
-    endpoint: String,
-    region: String,
-    bucket: String,
-    access_key: String,
-    has_secret: bool,
-    /// 加密密钥已配置（可导出）。
-    has_key: bool,
-    device_id: Option<String>,
-    last_sync_at: Option<String>,
-    /// 寻址风格：virtual | path。
-    addressing: String,
-    /// 单请求超时（秒）。
-    timeout_secs: u64,
-    /// 是否校验 TLS 证书。
-    tls_verify: bool,
-    /// 仅在本次 configure 首次生成密钥时返回一次（前端弹窗供抄录）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    generated_key: Option<String>,
-    /// 远端已有同步数据但本机无密钥：需从旧设备导入后才能启用同步
-    /// （configure 探测到远端对象时置位，导入密钥后清除）。
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    needs_key_import: bool,
-}
+/// 同步配置回显(领域逻辑在 mosh_core::sync::config;含 secret 明文供
+/// 前端密文框 + 小眼睛查看——本地单机场景与 access_key 同级凭据)。
+/// generated_key 仅在 configure 首次生成加密密钥时由调用方注入一次。
+type SyncConfigInfo = mosh_core::sync::config::SyncConfigView;
 
 fn sync_config_info(state: &SqliteStorage) -> SyncConfigInfo {
-    let get = |k: &str| {
-        state
-            .get_setting(k)
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
-    };
-    let has_key = get(mosh_core::sync::engine::KEY_SYNC_KEY).is_some();
-    SyncConfigInfo {
-        enabled: get(mosh_core::sync::engine::KEY_ENABLED).as_deref() == Some("true"),
-        endpoint: get(mosh_core::sync::engine::KEY_ENDPOINT).unwrap_or_default(),
-        region: get(mosh_core::sync::engine::KEY_REGION).unwrap_or_default(),
-        bucket: get(mosh_core::sync::engine::KEY_BUCKET).unwrap_or_default(),
-        access_key: get(mosh_core::sync::engine::KEY_ACCESS_KEY).unwrap_or_default(),
-        has_secret: get(mosh_core::sync::engine::KEY_SECRET_KEY).is_some(),
-        has_key,
-        device_id: get(mosh_core::sync::engine::KEY_DEVICE_ID),
-        last_sync_at: get(mosh_core::sync::engine::KEY_LAST_SYNC_AT),
-        addressing: get(mosh_core::sync::engine::KEY_ADDRESSING)
-            .unwrap_or_else(|| "virtual".into()),
-        timeout_secs: get(mosh_core::sync::engine::KEY_TIMEOUT)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(30),
-        tls_verify: get(mosh_core::sync::engine::KEY_TLS_VERIFY)
-            .map(|s| s != "false")
-            .unwrap_or(true),
-        generated_key: None,
-        needs_key_import: !has_key
-            && get(mosh_core::sync::engine::KEY_NEEDS_KEY_IMPORT).as_deref() == Some("true"),
-    }
+    mosh_core::sync::config::config_view(state)
 }
 
 /// 同步配置输入（secret 可为空 = 保留原值，便于改其他项）。

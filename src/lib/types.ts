@@ -189,6 +189,8 @@ export interface SyncConfigInfo {
   region: string;
   bucket: string;
   access_key: string;
+  /** 已保存的 SecretKey 明文（未保存时不出现/为 null）；前端密文框可切换查看。 */
+  secret_key?: string | null;
   has_secret: boolean;
   has_key: boolean;
   device_id: string | null;
