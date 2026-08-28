@@ -1,0 +1,7 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "zustand store 规范,新 models store 需遵循"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "组件与 CSS Modules 规范"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "SQLite 存储规范"}
+{"file": "crates/mosh-core/src/agent/llm.rs", "reason": "AiConfig/OpenAiClient 现状,sync_models 复用点"}
+{"file": "src/components/SettingsView.tsx", "reason": "现有 AI 设置页,BUILTIN_PROVIDERS 迁移来源"}
+{"file": "src/state/agent.ts", "reason": "聊天 store,send/init 改造点"}
