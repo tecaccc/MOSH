@@ -265,6 +265,67 @@ export interface AiConfig {
   model: string;
 }
 
+/** AI 提供商实体（ai_provider 表；08-28-ai-model-management）。 */
+export interface AiProvider {
+  /** 稳定 slug：预置键或 custom-<id>。 */
+  id: string;
+  /** 来源预置键（null = 全自定义）。 */
+  preset_id: string | null;
+  name: string;
+  base_url: string;
+  api_key: string;
+  enabled: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
+/** 模型实体（ai_model 表；id 即 UniqueModelId `providerId::modelId`）。 */
+export interface AiModel {
+  id: string;
+  provider_id: string;
+  /** API 原始模型 id。 */
+  model_id: string;
+  /** 显示名；null = 显示 model_id。 */
+  name: string | null;
+  /** 能力标签（vision/reasoning/tools/embedding）。 */
+  capabilities: string[];
+  context_window: number | null;
+  notes: string | null;
+  pinned: boolean;
+  enabled: boolean;
+  hidden: boolean;
+  sort_order: number;
+}
+
+/** ai_sync_models 返回体。 */
+export interface AiSyncResult {
+  added: string[];
+  hidden: string[];
+}
+
+/** ai_get_default_model 返回体。 */
+export interface AiDefaultModel {
+  provider: AiProvider;
+  model: AiModel;
+}
+
+/** UniqueModelId 分隔符（与 Rust MODEL_ID_SEP 对齐）。 */
+export const MODEL_ID_SEP = "::";
+
+/** 拼 UniqueModelId；非法输入返回 null。 */
+export function uniqueModelId(providerId: string, modelId: string): string | null {
+  if (!providerId || !modelId || providerId.includes(MODEL_ID_SEP)) return null;
+  return `${providerId}${MODEL_ID_SEP}${modelId}`;
+}
+
+/** 解析 UniqueModelId（首个 :: 分割）；非法返回 null。 */
+export function parseUniqueModelId(id: string): { providerId: string; modelId: string } | null {
+  const idx = id.indexOf(MODEL_ID_SEP);
+  if (idx <= 0) return null;
+  const modelId = id.slice(idx + MODEL_ID_SEP.length);
+  return modelId ? { providerId: id.slice(0, idx), modelId } : null;
+}
+
 /** 会话消息行（对齐 `agent_messages` 表；id 为 UUIDv7 字符串）。 */
 export interface AgentMessage {
   id: string;

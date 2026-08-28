@@ -13,6 +13,10 @@ import type {
   AgentMessage,
   AgentSessionSummary,
   AiConfig,
+  AiDefaultModel,
+  AiModel,
+  AiProvider,
+  AiSyncResult,
   CityCandidate,
   CloseBehavior,
   CurrentWeather,
@@ -233,6 +237,53 @@ export async function testAiConnection(
   model: string,
 ): Promise<string> {
   return invoke<string>("test_ai_connection", { baseUrl, apiKey, model });
+}
+
+// —— AI Provider/Model 实体（08-28-ai-model-management）——
+
+/** Provider 全量（sort_order 升序）。 */
+export async function aiListProviders(): Promise<AiProvider[]> {
+  return invoke<AiProvider[]>("ai_list_providers");
+}
+
+/** upsert Provider；id 空时后端生成。返回落库后的实体。 */
+export async function aiUpsertProvider(provider: AiProvider): Promise<AiProvider> {
+  return invoke<AiProvider>("ai_upsert_provider", { provider });
+}
+
+/** 删 Provider（级联删模型；默认模型属于它时后端顺带清空）。 */
+export async function aiDeleteProvider(providerId: string): Promise<void> {
+  return invoke<void>("ai_delete_provider", { providerId });
+}
+
+/** 模型列表；providerId 空 = 全部。 */
+export async function aiListModels(providerId?: string): Promise<AiModel[]> {
+  return invoke<AiModel[]>("ai_list_models", { providerId: providerId ?? null });
+}
+
+/** upsert 模型（后端校验 provider 存在与 id 一致性）。 */
+export async function aiUpsertModel(model: AiModel): Promise<void> {
+  return invoke<void>("ai_upsert_model", { model });
+}
+
+/** 删模型（是默认模型时后端顺带清空默认）。 */
+export async function aiDeleteModel(uniqueId: string): Promise<void> {
+  return invoke<void>("ai_delete_model", { uniqueId });
+}
+
+/** 同步远端模型：GET /models → diff 入库（新增/标隐藏/恢复）。 */
+export async function aiSyncModels(providerId: string): Promise<AiSyncResult> {
+  return invoke<AiSyncResult>("ai_sync_models", { providerId });
+}
+
+/** 当前默认模型（含实体）；无可用返回 null。 */
+export async function aiGetDefaultModel(): Promise<AiDefaultModel | null> {
+  return invoke<AiDefaultModel | null>("ai_get_default_model");
+}
+
+/** 设默认模型（后端校验可用）。 */
+export async function aiSetDefaultModel(uniqueId: string): Promise<void> {
+  return invoke<void>("ai_set_default_model", { uniqueId });
 }
 
 /** 会话摘要列表（最近活跃在前）。 */

@@ -1,0 +1,16 @@
+/* AI 实体图标兜底:名称首字母圆标(无匹配图标时)。 */
+
+.fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.7em;
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
