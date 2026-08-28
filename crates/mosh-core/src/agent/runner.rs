@@ -36,6 +36,8 @@ pub struct TurnExtras {
     pub skills: Vec<SkillDef>,
     pub mcp: Vec<(McpServerConfig, Vec<McpToolInfo>)>,
     pub permission: PermissionMode,
+    /// 本轮使用的模型 UniqueModelId（事件与 assistant 消息携带，前端展示用）。
+    pub model_id: Option<String>,
 }
 
 impl TurnExtras {
@@ -135,6 +137,7 @@ pub async fn run_turn_with<C: LlmClient>(
     on_event(AgentEvent::Start {
         session_id: session_id.to_string(),
         turn_id: turn_id.to_string(),
+        model_id: extras.model_id.clone(),
     });
 
     let finish = |reason, error| -> Result<(), CoreError> {
@@ -156,6 +159,7 @@ pub async fn run_turn_with<C: LlmClient>(
         tool_args: None,
         tool_result: None,
         images: user_images.to_vec(),
+        model: None,
         created_at: now_iso(),
     })?;
 
@@ -180,7 +184,7 @@ pub async fn run_turn_with<C: LlmClient>(
             Ok(r) => r,
             Err(e) => {
                 let msg = e.to_string();
-                persist_text(log, session_id, &format!("（出错了：{msg}）"))?;
+                persist_text(log, session_id, &format!("（出错了：{msg}）"), extras.model_id.as_deref())?;
                 return finish(EndReason::Error, Some(msg));
             }
         };
@@ -188,7 +192,7 @@ pub async fn run_turn_with<C: LlmClient>(
         // 纯文本收尾：入仓 + 结束。
         if reply.tool_calls.is_empty() {
             let text = reply.content.trim().to_string();
-            persist_text(log, session_id, &text)?;
+            persist_text(log, session_id, &text, extras.model_id.as_deref())?;
             return finish(EndReason::Done, None);
         }
 
@@ -228,7 +232,7 @@ pub async fn run_turn_with<C: LlmClient>(
     }
 
     let msg = format!("达到单轮工具调用步数上限（{MAX_STEPS}），已停止。");
-    persist_text(log, session_id, &msg)?;
+    persist_text(log, session_id, &msg, extras.model_id.as_deref())?;
     finish(EndReason::Error, Some(msg))
 }
 
@@ -286,6 +290,7 @@ async fn exec_tool(
         tool_args: Some(tc.function.arguments.clone()),
         tool_result: Some(result.to_string()),
         images: vec![],
+        model: None,
         created_at: now_iso(),
     };
     (event, row)
@@ -315,6 +320,7 @@ fn rejected_tool(
         tool_args: Some(tc.function.arguments.clone()),
         tool_result: Some(result.to_string()),
         images: vec![],
+        model: None,
         created_at: now_iso(),
     };
     (event, row)
@@ -383,7 +389,12 @@ fn system_prompt(skills: Option<&str>) -> String {
     p
 }
 
-fn persist_text(log: &MemoryAgentLog, session_id: &str, content: &str) -> Result<(), CoreError> {
+fn persist_text(
+    log: &MemoryAgentLog,
+    session_id: &str,
+    content: &str,
+    model_id: Option<&str>,
+) -> Result<(), CoreError> {
     log.append(&AgentMessage {
         id: String::new(),
         session_id: session_id.to_string(),
@@ -393,6 +404,7 @@ fn persist_text(log: &MemoryAgentLog, session_id: &str, content: &str) -> Result
         tool_args: None,
         tool_result: None,
         images: vec![],
+        model: model_id.map(str::to_string),
         created_at: now_iso(),
     })
     .map(|_| ())
@@ -663,6 +675,7 @@ mod tests {
                 tool_result: None,
                 created_at: now_iso(),
                 images: vec![],
+        model: None,
             })
             .unwrap();
         }
@@ -687,6 +700,7 @@ mod tests {
                 tool_args: None,
                 tool_result: None,
                 images: vec![format!("data:image/jpeg;base64,{i}")],
+                model: None,
                 created_at: now_iso(),
             })
             .unwrap();

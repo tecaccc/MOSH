@@ -5,10 +5,13 @@
 //! 把 `CoreError` 转成前端可读字符串。`State<SqliteStorage>` 在 `setup`
 //! 中由 `app_data_dir/mosh.sqlite` 打开并注入。
 
+use mosh_core::agent::mcp::McpToolInfo;
+use mosh_core::agent::models::{
+    parse_unique_model_id, unique_model_id, AiModel, AiProvider, AiSyncResult,
+};
 use mosh_core::agent::{
     self, AgentEvent, AiConfig, LlmClient, McpServerConfig, SkillDef, TurnExtras,
 };
-use mosh_core::agent::mcp::McpToolInfo;
 use mosh_core::model::{EventInput, Record, RecordFilter, RecordPatch, Status, TodoInput};
 use mosh_core::service;
 use mosh_core::storage::{AgentMessage, AgentSessionSummary, MemoryAgentLog, SqliteStorage};
@@ -384,24 +387,94 @@ impl agent::ApprovalGate for SessionGate {
     }
 }
 
-/// 读 AI 模型配置；未配置返回可读错误（前端引导去设置页）。
-fn load_ai_config(state: &SqliteStorage) -> Result<AiConfig, String> {
-    let json = state.get_setting("ai_model").map_err(|e| e.to_string())?;
-    let cfg: AiConfig = json
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-    if !cfg.is_complete() {
-        return Err("尚未配置 AI 模型：请前往「设置 → AI 模型」填写".to_string());
+/// 默认模型解析结果：provider + model 实体（model.id 即 UniqueModelId）。
+struct ResolvedModel {
+    provider: AiProvider,
+    model: AiModel,
+}
+
+/// 从某 provider+model 实体拼发送用 AiConfig。
+fn ai_config_of(provider: &AiProvider, model: &AiModel) -> AiConfig {
+    AiConfig {
+        name: provider.name.clone(),
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        model: model.model_id.clone(),
     }
-    Ok(cfg.normalized())
+    .normalized()
+}
+
+/// 解析默认模型：settings `ai_default_model` → 失效时回退首个可用（enabled
+/// provider 的首个 enabled 且未 hidden 模型）。无任何可用 → None。
+fn resolve_default_model(state: &SqliteStorage) -> Result<Option<ResolvedModel>, String> {
+    let default_id = state
+        .get_setting("ai_default_model")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty());
+    if let Some(id) = default_id {
+        if let Some(r) = try_resolve_usable(state, &id)? {
+            return Ok(Some(r));
+        }
+        // 默认指向的模型不可用（被删/禁用）：回退而非报错。
+    }
+    let providers = state.list_ai_providers().map_err(|e| e.to_string())?;
+    for p in providers.iter().filter(|p| p.enabled) {
+        if let Some(m) = state
+            .list_ai_models(Some(&p.id))
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|m| m.enabled && !m.hidden)
+        {
+            return Ok(Some(ResolvedModel {
+                provider: p.clone(),
+                model: m,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// 按 UniqueModelId 解析且校验可用（provider 与 model 均 enabled）。
+fn try_resolve_usable(state: &SqliteStorage, unique_id: &str) -> Result<Option<ResolvedModel>, String> {
+    let Some((provider_id, _)) = parse_unique_model_id(unique_id) else {
+        return Ok(None);
+    };
+    let model = state.get_ai_model(unique_id).map_err(|e| e.to_string())?;
+    let provider = state.get_ai_provider(&provider_id).map_err(|e| e.to_string())?;
+    match (provider, model) {
+        (Some(p), Some(m)) if p.enabled && m.enabled => Ok(Some(ResolvedModel { provider: p, model: m })),
+        _ => Ok(None),
+    }
+}
+
+/// 聊天发送路径的配置解析。`model_override`：含 `::` 视为 UniqueModelId
+/// （完整覆盖 provider+model）；非空纯模型 id 沿用旧语义（覆盖默认 provider 的模型）；
+/// 空 = 用默认模型。返回（发送配置, 本轮 UniqueModelId 或 None）。
+fn load_ai_config(
+    state: &SqliteStorage,
+    model_override: &str,
+) -> Result<(AiConfig, Option<String>), String> {
+    let ov = model_override.trim();
+    if !ov.is_empty() && ov.contains("::") {
+        let r = try_resolve_usable(state, ov)?
+            .ok_or_else(|| format!("所选模型不可用：{ov}（可能已被删除或禁用）"))?;
+        let uid = r.model.id.clone();
+        return Ok((ai_config_of(&r.provider, &r.model), Some(uid)));
+    }
+    let r = resolve_default_model(state)?.ok_or(
+        "尚未配置 AI 模型：请前往「设置 → AI 模型」添加提供商并选择模型".to_string(),
+    )?;
+    let uid = r.model.id.clone();
+    let mut cfg = ai_config_of(&r.provider, &r.model);
+    if !ov.is_empty() {
+        // 旧语义：仅覆盖模型 id（同 provider 下临时换模型）。
+        cfg.model = ov.to_string();
+    }
+    Ok((cfg, Some(uid)))
 }
 
 /// 发送一条用户消息（可附图片）并驱动一轮 Agent 循环；事件经 `agent://*` 回传。
-/// `model` 为聊天界面所选模型（非空时覆盖配置里的默认模型）；
+/// `model`：UniqueModelId（含 `::`）或模型 id（旧语义，覆盖默认 provider）；空 = 默认。
 /// `images` 为图片 data URL（vision 多模态，前端已压缩）。
 #[allow(clippy::too_many_arguments)] // State 注入多属环境参数，业务实参仅 4 个
 #[tauri::command]
@@ -431,11 +504,7 @@ async fn agent_send(
     if message.trim().is_empty() && images.is_empty() {
         return Err("消息不能为空".to_string());
     }
-    let mut cfg = load_ai_config(&state)?;
-    let model = model.trim();
-    if !model.is_empty() {
-        cfg.model = model.to_string();
-    }
+    let (cfg, turn_model_id) = load_ai_config(&state, &model)?;
 
     // 登记/占用会话运行槽：同会话同时在跑 → 拒绝。
     let abort = {
@@ -486,6 +555,7 @@ async fn agent_send(
             skills,
             mcp,
             permission,
+            model_id: turn_model_id,
         }
     };
 
@@ -583,78 +653,35 @@ fn set_permission_mode(mode: String, state: State<'_, SqliteStorage>) -> Result<
         .map_err(|e| e.to_string())
 }
 
-/// 读 AI 模型配置（未配置返回 null）。
+// ── AI 配置命令（新实体表 + 旧命令兼容层）──
+// 新命令：ai_list_providers / ai_upsert_provider / ai_delete_provider / ai_list_models /
+// ai_upsert_model / ai_delete_model / ai_sync_models / ai_get_default_model / ai_set_default_model。
+// 旧命令（get/set_ai_config、list/save/delete_ai_provider）保留签名、内部改读新表，
+// 供旧设置页过渡使用；前端全部切换后可移除。
+
+/// 读 AI 模型配置（未配置返回 null）。旧命令：改为默认模型解析。
 #[tauri::command]
 fn get_ai_config(state: State<'_, SqliteStorage>) -> Result<Option<AiConfig>, String> {
-    let json = state.get_setting("ai_model").map_err(|e| e.to_string())?;
-    json.as_deref()
-        .filter(|s| !s.is_empty())
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|e| e.to_string())
+    Ok(resolve_default_model(&state)?.map(|r| ai_config_of(&r.provider, &r.model)))
 }
 
-/// 写 AI 模型配置（三项校验非空）。
+/// 写 AI 模型配置（旧命令，等价 save_ai_provider）。
 #[tauri::command]
 fn set_ai_config(state: State<'_, SqliteStorage>, config: AiConfig) -> Result<(), String> {
-    let cfg = config.normalized();
-    if !cfg.is_complete() {
-        return Err("base_url 与 model 不能为空".to_string());
-    }
-    let serialized = serde_json::to_string(&cfg).map_err(|e| e.to_string())?;
-    state
-        .set_setting("ai_model", &serialized)
-        .map_err(|e| e.to_string())
+    save_ai_provider(state, config)
 }
 
-/// 读提供商列表（settings key=`ai_providers`）。列表为空时回退到当前激活配置（若有）。
-fn load_providers(state: &SqliteStorage) -> Result<Vec<AiConfig>, String> {
-    let json = state
-        .get_setting("ai_providers")
-        .map_err(|e| e.to_string())?;
-    let mut providers: Vec<AiConfig> = json
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-    if providers.is_empty() {
-        if let Some(cfg) = get_ai_config_inner(state)? {
-            let mut c = cfg.normalized();
-            if c.name.is_empty() {
-                c.name = "默认提供商".to_string();
-            }
-            providers.push(c);
-        }
-    }
-    Ok(providers)
+/// 短 id（custom-<8位>，新 Provider 生成用）。
+fn short_custom_id() -> String {
+    mosh_core::model::new_id()
+        .replace('-', "")
+        .chars()
+        .take(8)
+        .collect()
 }
 
-/// 读激活配置（不含回退逻辑）。
-fn get_ai_config_inner(state: &SqliteStorage) -> Result<Option<AiConfig>, String> {
-    let json = state.get_setting("ai_model").map_err(|e| e.to_string())?;
-    json.as_deref()
-        .filter(|s| !s.is_empty())
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|e| e.to_string())
-}
-
-fn save_providers(state: &SqliteStorage, providers: &[AiConfig]) -> Result<(), String> {
-    let serialized = serde_json::to_string(providers).map_err(|e| e.to_string())?;
-    state
-        .set_setting("ai_providers", &serialized)
-        .map_err(|e| e.to_string())
-}
-
-/// 提供商列表（设置页左侧菜单）。
-#[tauri::command]
-fn list_ai_providers(state: State<'_, SqliteStorage>) -> Result<Vec<AiConfig>, String> {
-    load_providers(&state)
-}
-
-/// 保存单个提供商（按 name upsert），并设为激活配置（供聊天/Agent 使用）。
+/// 旧语义 Provider upsert：按 name 找到则沿用 id，否则建 custom-<id>；
+/// 带上 model 字符串插一行模型，并设为默认（「保存即激活」旧语义）。
 #[tauri::command]
 fn save_ai_provider(state: State<'_, SqliteStorage>, config: AiConfig) -> Result<(), String> {
     let cfg = config.normalized();
@@ -664,41 +691,226 @@ fn save_ai_provider(state: State<'_, SqliteStorage>, config: AiConfig) -> Result
     if !cfg.is_complete() {
         return Err("base_url 与 model 不能为空".to_string());
     }
-    let mut providers = load_providers(&state)?;
-    if let Some(p) = providers.iter_mut().find(|p| p.name == cfg.name) {
-        *p = cfg.clone();
-    } else {
-        providers.push(cfg.clone());
-    }
-    save_providers(&state, &providers)?;
-    // 设为激活。
-    let serialized = serde_json::to_string(&cfg).map_err(|e| e.to_string())?;
+    let existing = state.find_ai_provider_by_name(&cfg.name).map_err(|e| e.to_string())?;
+    let (id, sort_order) = match &existing {
+        Some(p) => (p.id.clone(), p.sort_order),
+        None => (format!("custom-{}", short_custom_id()), 999.0),
+    };
     state
-        .set_setting("ai_model", &serialized)
+        .upsert_ai_provider(&AiProvider {
+            id: id.clone(),
+            preset_id: existing.as_ref().and_then(|p| p.preset_id.clone()),
+            name: cfg.name.clone(),
+            base_url: cfg.base_url.clone(),
+            api_key: cfg.api_key.clone(),
+            enabled: true,
+            sort_order,
+            created_at: String::new(),
+        })
+        .map_err(|e| e.to_string())?;
+    let uid = unique_model_id(&id, &cfg.model)
+        .ok_or_else(|| format!("非法模型 id：{}", cfg.model))?;
+    if state.get_ai_model(&uid).map_err(|e| e.to_string())?.is_none() {
+        state
+            .upsert_ai_model(&AiModel {
+                id: uid.clone(),
+                provider_id: id,
+                model_id: cfg.model.clone(),
+                name: None,
+                capabilities: Vec::new(),
+                context_window: None,
+                notes: None,
+                pinned: false,
+                enabled: true,
+                hidden: false,
+                sort_order: 1.0,
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    state
+        .set_setting("ai_default_model", &uid)
         .map_err(|e| e.to_string())
 }
 
-/// 删除提供商（按 name）；若删的是激活项，自动激活第一个剩余项（无剩余则清空）。
+/// 删除提供商（旧命令，按 name）。
 #[tauri::command]
 fn delete_ai_provider(state: State<'_, SqliteStorage>, name: String) -> Result<(), String> {
-    let mut providers = load_providers(&state)?;
-    providers.retain(|p| p.name != name);
-    save_providers(&state, &providers)?;
-    if let Some(active) = get_ai_config_inner(&state)? {
-        if active.name == name {
-            let next = providers.first().cloned();
-            let serialized = next
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|e| e.to_string())?
-                .unwrap_or_default();
-            state
-                .set_setting("ai_model", &serialized)
-                .map_err(|e| e.to_string())?;
-        }
+    if let Some(p) = state.find_ai_provider_by_name(&name).map_err(|e| e.to_string())? {
+        state.delete_ai_provider(&p.id).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// 提供商列表（旧命令：映射回 AiConfig 形状；model 取该 provider 的
+/// 默认/首个可用模型 id）。
+#[tauri::command]
+fn list_ai_providers(state: State<'_, SqliteStorage>) -> Result<Vec<AiConfig>, String> {
+    let providers = state.list_ai_providers().map_err(|e| e.to_string())?;
+    let default_uid = state
+        .get_setting("ai_default_model")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty());
+    let default_provider = default_uid
+        .as_deref()
+        .and_then(parse_unique_model_id)
+        .map(|(pid, _)| pid);
+    let mut out = Vec::with_capacity(providers.len());
+    for p in providers {
+        let models = state
+            .list_ai_models(Some(&p.id))
+            .map_err(|e| e.to_string())?;
+        let model = if default_provider.as_deref() == Some(p.id.as_str()) {
+            default_uid
+                .as_deref()
+                .and_then(parse_unique_model_id)
+                .map(|(_, mid)| mid)
+                .unwrap_or_default()
+        } else {
+            models
+                .iter()
+                .find(|m| m.enabled && !m.hidden)
+                .map(|m| m.model_id.clone())
+                .unwrap_or_default()
+        };
+        out.push(
+            AiConfig {
+                name: p.name,
+                base_url: p.base_url,
+                api_key: p.api_key,
+                model,
+            }
+            .normalized(),
+        );
+    }
+    Ok(out)
+}
+
+// ── 新命令：Provider/Model 实体 CRUD ──
+
+/// Provider 全量（sort_order 升序）。
+#[tauri::command]
+fn ai_list_providers(state: State<'_, SqliteStorage>) -> Result<Vec<AiProvider>, String> {
+    state.list_ai_providers().map_err(|e| e.to_string())
+}
+
+/// upsert Provider；id 为空时生成 custom-<id>。返回落库后的实体。
+#[tauri::command]
+fn ai_upsert_provider(
+    state: State<'_, SqliteStorage>,
+    mut provider: AiProvider,
+) -> Result<AiProvider, String> {
+    provider.name = provider.name.trim().to_string();
+    provider.base_url = provider.base_url.trim().trim_end_matches('/').to_string();
+    provider.api_key = provider.api_key.trim().to_string();
+    if provider.name.is_empty() {
+        return Err("提供商名称不能为空".to_string());
+    }
+    if provider.base_url.is_empty() {
+        return Err("base_url 不能为空".to_string());
+    }
+    if provider.id.is_empty() {
+        provider.id = format!("custom-{}", short_custom_id());
+        provider.created_at = String::new();
+    }
+    state
+        .upsert_ai_provider(&provider)
+        .map_err(|e| e.to_string())?;
+    Ok(provider)
+}
+
+/// 删 Provider（级联删模型；默认模型属于它时顺带清空默认）。
+#[tauri::command]
+fn ai_delete_provider(state: State<'_, SqliteStorage>, provider_id: String) -> Result<(), String> {
+    state.delete_ai_provider(&provider_id).map_err(|e| e.to_string())
+}
+
+/// 模型列表；provider_id None = 全部。
+#[tauri::command]
+fn ai_list_models(
+    state: State<'_, SqliteStorage>,
+    provider_id: Option<String>,
+) -> Result<Vec<AiModel>, String> {
+    state
+        .list_ai_models(provider_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// upsert 模型（provider 必须已存在；能力标签限白名单）。
+#[tauri::command]
+fn ai_upsert_model(state: State<'_, SqliteStorage>, mut model: AiModel) -> Result<(), String> {
+    const KNOWN_CAPS: [&str; 4] = ["vision", "reasoning", "tools", "embedding"];
+    if state
+        .get_ai_provider(&model.provider_id)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Err(format!("提供商不存在：{}", model.provider_id));
+    }
+    model.model_id = model.model_id.trim().to_string();
+    if model.model_id.is_empty() {
+        return Err("模型 id 不能为空".to_string());
+    }
+    let id = unique_model_id(&model.provider_id, &model.model_id)
+        .ok_or_else(|| format!("非法模型 id：{}", model.model_id))?;
+    model.id = id;
+    model.capabilities.retain(|c| KNOWN_CAPS.contains(&c.as_str()));
+    state.upsert_ai_model(&model).map_err(|e| e.to_string())
+}
+
+/// 删模型（是默认模型时顺带清空默认）。
+#[tauri::command]
+fn ai_delete_model(state: State<'_, SqliteStorage>, unique_id: String) -> Result<(), String> {
+    state.delete_ai_model(&unique_id).map_err(|e| e.to_string())
+}
+
+/// 同步远端模型：GET /models → diff 入库（新增插入、缺失标 hidden、曾隐藏恢复）。
+#[tauri::command]
+async fn ai_sync_models(
+    state: State<'_, SqliteStorage>,
+    provider_id: String,
+) -> Result<AiSyncResult, String> {
+    let provider = state
+        .get_ai_provider(&provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("提供商不存在：{provider_id}"))?;
+    if provider.base_url.is_empty() {
+        return Err("base_url 不能为空".to_string());
+    }
+    let cfg = AiConfig {
+        name: String::new(),
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        model: String::new(),
+    }
+    .normalized();
+    let client = agent::OpenAiClient::new(&cfg);
+    let remote = client.list_models().await.map_err(|e| e.to_string())?;
+    state
+        .sync_ai_models(&provider_id, &remote)
+        .map_err(|e| e.to_string())
+}
+
+/// 当前默认模型（含 provider/model 实体，前端展示用）；无可用 → None。
+#[tauri::command]
+fn ai_get_default_model(
+    state: State<'_, SqliteStorage>,
+) -> Result<Option<mosh_core::agent::models::AiDefaultModel>, String> {
+    Ok(resolve_default_model(&state)?.map(|r| mosh_core::agent::models::AiDefaultModel {
+        provider: r.provider,
+        model: r.model,
+    }))
+}
+
+/// 设默认模型（校验存在且可用）。
+#[tauri::command]
+fn ai_set_default_model(state: State<'_, SqliteStorage>, unique_id: String) -> Result<(), String> {
+    let uid = unique_id.trim().to_string();
+    if try_resolve_usable(&state, &uid)?.is_none() {
+        return Err(format!("模型不可用：{uid}（不存在、被禁用或所属提供商已禁用）"));
+    }
+    state
+        .set_setting("ai_default_model", &uid)
+        .map_err(|e| e.to_string())
 }
 
 /// 拉取模型列表（设置页「获取模型列表」）：用表单值直接请求 `/models`。
@@ -1944,6 +2156,10 @@ pub fn run() {
             let storage = SqliteStorage::open(&db_path).unwrap_or_else(|e| {
                 panic!("failed to open mosh database at {}: {e}", db_path.display())
             });
+            // 旧版 AI 配置（settings JSON）一次性导入新实体表；幂等。
+            if let Err(e) = storage.migrate_legacy_ai_config() {
+                eprintln!("[storage] legacy ai config migration failed: {e}");
+            }
             app.manage(storage);
             // 同步生命周期：启动拉 + 变更防抖推（未就绪时内部静默跳过）。
             spawn_sync_lifecycle(app.handle().clone());
@@ -1995,6 +2211,15 @@ pub fn run() {
             delete_ai_provider,
             list_ai_models,
             test_ai_connection,
+            ai_list_providers,
+            ai_upsert_provider,
+            ai_delete_provider,
+            ai_list_models,
+            ai_upsert_model,
+            ai_delete_model,
+            ai_sync_models,
+            ai_get_default_model,
+            ai_set_default_model,
             list_agent_sessions,
             list_agent_messages,
             delete_agent_session,

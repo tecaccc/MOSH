@@ -1,5 +1,6 @@
 //! SQLite 存储：统一 `records` 表 + 迁移 + 基础 CRUD。
 
+use crate::agent::models::{AiModel, AiProvider, AiSyncResult, LegacyAiConfig};
 use crate::error::CoreError;
 use crate::model::{Kind, Record, RecordFilter, Status};
 use rusqlite::{params, Connection};
@@ -35,6 +36,10 @@ pub struct AgentMessage {
     /// 图片附件（data URL；仅 user 行可非空，旧数据/旧行无此字段 → 空）。
     #[serde(default)]
     pub images: Vec<String>,
+    /// 生成该条 assistant 消息的模型 UniqueModelId（user/tool 行为 None；
+    /// 旧数据无此字段 → None）。气泡头部展示模型图标用。
+    #[serde(default)]
+    pub model: Option<String>,
     pub created_at: String,
 }
 
@@ -261,6 +266,42 @@ fn migrations() -> Migrations<'static> {
             r#"
         DROP TABLE agent_messages;
         DROP TABLE agent_session_tombstones;
+        "#,
+        ),
+        // v9：AI Provider/Model 实体化（借鉴 Cherry Studio 架构：模型以
+        // `providerId::modelId` 为全局唯一键，非空列即用户覆盖）。
+        // ai_meta 存本机私有标记（如旧配置导入位），不参与同步。
+        M::up(
+            r#"
+        CREATE TABLE ai_provider (
+          id         TEXT PRIMARY KEY,
+          preset_id  TEXT,
+          name       TEXT NOT NULL,
+          base_url   TEXT NOT NULL,
+          api_key    TEXT NOT NULL DEFAULT '',
+          enabled    INTEGER NOT NULL DEFAULT 1,
+          sort_order REAL NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE ai_model (
+          id             TEXT PRIMARY KEY,
+          provider_id    TEXT NOT NULL REFERENCES ai_provider(id) ON DELETE CASCADE,
+          model_id       TEXT NOT NULL,
+          name           TEXT,
+          capabilities   TEXT NOT NULL DEFAULT '[]',
+          context_window INTEGER,
+          notes          TEXT,
+          pinned         INTEGER NOT NULL DEFAULT 0,
+          enabled        INTEGER NOT NULL DEFAULT 1,
+          hidden         INTEGER NOT NULL DEFAULT 0,
+          sort_order     REAL NOT NULL DEFAULT 0,
+          UNIQUE(provider_id, model_id)
+        );
+        CREATE INDEX idx_ai_model_provider ON ai_model(provider_id);
+        CREATE TABLE ai_meta (
+          key   TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
         "#,
         ),
     ])
@@ -519,6 +560,475 @@ impl SqliteStorage {
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
+
+    // ── AI Provider / Model 实体（08-28-ai-model-management）──
+
+    /// 旧配置导入标记（ai_meta，本机私有不参与同步）。
+    const AI_LEGACY_IMPORTED: &'static str = "ai_legacy_imported";
+
+    /// Provider 全量（sort_order 升序、同序按 name）。
+    pub fn list_ai_providers(&self) -> Result<Vec<AiProvider>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, preset_id, name, base_url, api_key, enabled, sort_order, created_at
+             FROM ai_provider ORDER BY sort_order ASC, name ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_ai_provider)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
+    /// 按 id 取 Provider。
+    pub fn get_ai_provider(&self, id: &str) -> Result<Option<AiProvider>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, preset_id, name, base_url, api_key, enabled, sort_order, created_at
+             FROM ai_provider WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], row_to_ai_provider)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// 按 name 精确找（旧命令兼容层用）。
+    pub fn find_ai_provider_by_name(&self, name: &str) -> Result<Option<AiProvider>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, preset_id, name, base_url, api_key, enabled, sort_order, created_at
+             FROM ai_provider WHERE name = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![name], row_to_ai_provider)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// upsert Provider（id 冲突即更新；created_at 空则补当前时间）。
+    pub fn upsert_ai_provider(&self, p: &AiProvider) -> Result<(), CoreError> {
+        mark_dirty();
+        let created_at = if p.created_at.is_empty() {
+            crate::model::now_iso()
+        } else {
+            p.created_at.clone()
+        };
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO ai_provider (id, preset_id, name, base_url, api_key, enabled, sort_order, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+               preset_id = excluded.preset_id,
+               name = excluded.name,
+               base_url = excluded.base_url,
+               api_key = excluded.api_key,
+               enabled = excluded.enabled,
+               sort_order = excluded.sort_order",
+            params![
+                p.id,
+                p.preset_id,
+                p.name,
+                p.base_url,
+                p.api_key,
+                p.enabled,
+                p.sort_order,
+                created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 删 Provider（级联删模型；若默认模型属于它则顺带清空默认）。
+    pub fn delete_ai_provider(&self, id: &str) -> Result<(), CoreError> {
+        mark_dirty();
+        let conn = self.lock()?;
+        conn.execute("DELETE FROM ai_provider WHERE id = ?1", params![id])?;
+        drop(conn);
+        self.clear_default_model_if_matches(id)
+    }
+
+    /// 模型列表。`provider_id` None = 全部；sort_order 升序、同序按 model_id。
+    pub fn list_ai_models(&self, provider_id: Option<&str>) -> Result<Vec<AiModel>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, provider_id, model_id, name, capabilities, context_window, notes,
+                    pinned, enabled, hidden, sort_order
+             FROM ai_model
+             WHERE (?1 IS NULL OR provider_id = ?1)
+             ORDER BY sort_order ASC, model_id ASC",
+        )?;
+        let rows = stmt.query_map(params![provider_id], row_to_ai_model)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
+    /// 按 UniqueModelId 取模型。
+    pub fn get_ai_model(&self, unique_id: &str) -> Result<Option<AiModel>, CoreError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, provider_id, model_id, name, capabilities, context_window, notes,
+                    pinned, enabled, hidden, sort_order
+             FROM ai_model WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![unique_id], row_to_ai_model)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// upsert 模型。校验 id 与 provider_id/model_id 一致（防错位写）。
+    pub fn upsert_ai_model(&self, m: &AiModel) -> Result<(), CoreError> {
+        if m.id != format!("{}{}{}", m.provider_id, crate::agent::models::MODEL_ID_SEP, m.model_id) {
+            return Err(CoreError::Validation(format!(
+                "模型 id 与 provider/model 不一致: {}",
+                m.id
+            )));
+        }
+        mark_dirty();
+        let caps = serde_json::to_string(&m.capabilities)
+            .map_err(|e| CoreError::Db(format!("capabilities 序列化失败: {e}")))?;
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO ai_model (id, provider_id, model_id, name, capabilities, context_window,
+                                  notes, pinned, enabled, hidden, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               capabilities = excluded.capabilities,
+               context_window = excluded.context_window,
+               notes = excluded.notes,
+               pinned = excluded.pinned,
+               enabled = excluded.enabled,
+               hidden = excluded.hidden,
+               sort_order = excluded.sort_order",
+            params![
+                m.id,
+                m.provider_id,
+                m.model_id,
+                m.name,
+                caps,
+                m.context_window,
+                m.notes,
+                m.pinned,
+                m.enabled,
+                m.hidden,
+                m.sort_order
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 删模型；若是默认模型则顺带清空默认。
+    pub fn delete_ai_model(&self, unique_id: &str) -> Result<(), CoreError> {
+        mark_dirty();
+        let conn = self.lock()?;
+        conn.execute("DELETE FROM ai_model WHERE id = ?1", params![unique_id])?;
+        drop(conn);
+        self.clear_default_model_if_matches(unique_id)
+    }
+
+    /// 同步远端模型 id 列表：新增入库（enabled=1），本地多余标 hidden=1（不物理删）。
+    /// 返回 (新增的原始 model_id, 被隐藏的 UniqueModelId)。
+    pub fn sync_ai_models(
+        &self,
+        provider_id: &str,
+        remote_ids: &[String],
+    ) -> Result<AiSyncResult, CoreError> {
+        mark_dirty();
+        let existing = self.list_ai_models(Some(provider_id))?;
+        let mut known: std::collections::HashSet<&str> =
+            existing.iter().map(|m| m.model_id.as_str()).collect();
+
+        let mut added = Vec::new();
+        let mut sort = existing
+            .iter()
+            .map(|m| m.sort_order)
+            .fold(0.0_f64, f64::max);
+        for rid in remote_ids {
+            if !known.insert(rid.as_str()) {
+                continue; // 已在库（HashSet 返回 false = 原本存在，顺带去重远端重复项）
+            }
+            let id = crate::agent::models::unique_model_id(provider_id, rid)
+                .ok_or_else(|| CoreError::Validation(format!("非法模型 id: {rid}")))?;
+            sort += 1.0;
+            self.upsert_ai_model(&AiModel {
+                id,
+                provider_id: provider_id.to_string(),
+                model_id: rid.clone(),
+                name: None,
+                capabilities: Vec::new(),
+                context_window: None,
+                notes: None,
+                pinned: false,
+                enabled: true,
+                hidden: false,
+                sort_order: sort,
+            })?;
+            added.push(rid.clone());
+        }
+
+        // 远端仍在的曾隐藏模型恢复可见；本地多余且未隐藏的标记 hidden。
+        let remote_set: std::collections::HashSet<&str> =
+            remote_ids.iter().map(|s| s.as_str()).collect();
+        let mut hidden_ids = Vec::new();
+        for m in &existing {
+            let on_remote = remote_set.contains(m.model_id.as_str());
+            if on_remote == !m.hidden {
+                continue; // 状态已一致（在远端且未隐藏 / 不在远端且已隐藏）
+            }
+            let mut next = m.clone();
+            next.hidden = !on_remote;
+            self.upsert_ai_model(&next)?;
+            if !on_remote {
+                hidden_ids.push(m.id.clone());
+            }
+        }
+        Ok(AiSyncResult {
+            added,
+            hidden: hidden_ids,
+        })
+    }
+
+    /// 旧版 settings JSON（ai_providers / ai_model）一次性导入新表；幂等。
+    /// 仅当 ai_provider 为空且未导入过时执行；旧 key 保留只读（旧版本回退安全）。
+    pub fn migrate_legacy_ai_config(&self) -> Result<usize, CoreError> {
+        let imported = self.get_ai_meta(Self::AI_LEGACY_IMPORTED)?;
+        if imported.as_deref() == Some("1") {
+            return Ok(0);
+        }
+        let count = self.list_ai_providers()?.len();
+        if count > 0 {
+            // 已有数据（新装后自建过）：直接标记，避免后续旧 key 同步进来误导入。
+            self.set_ai_meta(Self::AI_LEGACY_IMPORTED, "1")?;
+            return Ok(0);
+        }
+
+        let mut imported_count = 0usize;
+        let mut default_unique: Option<String> = None;
+        let legacy_list: Vec<LegacyAiConfig> = self
+            .get_setting("ai_providers")?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        for (i, lc) in legacy_list.into_iter().enumerate() {
+            let pid = self.import_legacy_provider(lc, "ai_providers", (i as f64) + 1.0)?;
+            imported_count += 1;
+            if default_unique.is_none() {
+                default_unique = self.first_enabled_model_of(&pid)?;
+            }
+        }
+
+        // 激活配置（ai_model）：不在列表中时补为独立 Provider。
+        let active: Option<LegacyAiConfig> = self
+            .get_setting("ai_model")?
+            .and_then(|s| serde_json::from_str(&s).ok());
+        if let Some(active) = active {
+            let complete = !active.base_url.trim().is_empty() && !active.model.trim().is_empty();
+            if complete {
+                let name = if active.name.trim().is_empty() {
+                    "默认提供商".to_string()
+                } else {
+                    active.name.trim().to_string()
+                };
+                let already = self.find_ai_provider_by_name(&name)?;
+                let pid = match already {
+                    Some(p) => p.id.clone(),
+                    None => {
+                        let mut lc = active.clone();
+                        lc.name = name;
+                        self.import_legacy_provider(lc, "ai_model", 999.0)?
+                    }
+                };
+                let uid = crate::agent::models::unique_model_id(&pid, active.model.trim())
+                    .ok_or_else(|| {
+                        CoreError::Validation(format!("非法模型 id: {}", active.model))
+                    })?;
+                if self.get_ai_model(&uid)?.is_none() {
+                    self.upsert_ai_model(&AiModel {
+                        id: uid.clone(),
+                        provider_id: pid,
+                        model_id: active.model.trim().to_string(),
+                        name: None,
+                        capabilities: Vec::new(),
+                        context_window: None,
+                        notes: None,
+                        pinned: false,
+                        enabled: true,
+                        hidden: false,
+                        sort_order: 1.0,
+                    })?;
+                }
+                default_unique = Some(uid);
+            }
+        }
+
+        if let Some(uid) = default_unique {
+            self.set_setting("ai_default_model", &uid)?;
+        }
+        self.set_ai_meta(Self::AI_LEGACY_IMPORTED, "1")?;
+        Ok(imported_count)
+    }
+
+    /// 单条旧 Provider 导入：预置名匹配预置键，否则 custom-<uuid8>；带 model 插一行模型。
+    fn import_legacy_provider(
+        &self,
+        lc: LegacyAiConfig,
+        source: &str,
+        sort_order: f64,
+    ) -> Result<String, CoreError> {
+        let name = if lc.name.trim().is_empty() {
+            format!("未命名-{source}")
+        } else {
+            lc.name.trim().to_string()
+        };
+        let id = match self.find_ai_provider_by_name(&name)? {
+            Some(existing) => existing.id.clone(),
+            None => {
+                let slug = preset_slug_of(&name).unwrap_or_else(|| format!("custom-{}", short_uuid()));
+                slug
+            }
+        };
+        let p = AiProvider {
+            id: id.clone(),
+            preset_id: preset_slug_of(&name),
+            name,
+            base_url: lc.base_url.trim().trim_end_matches('/').to_string(),
+            api_key: lc.api_key.trim().to_string(),
+            enabled: true,
+            sort_order,
+            created_at: String::new(),
+        };
+        self.upsert_ai_provider(&p)?;
+        let model_id = lc.model.trim();
+        if !model_id.is_empty() {
+            let uid = crate::agent::models::unique_model_id(&id, model_id)
+                .ok_or_else(|| CoreError::Validation(format!("非法模型 id: {model_id}")))?;
+            if self.get_ai_model(&uid)?.is_none() {
+                self.upsert_ai_model(&AiModel {
+                    id: uid,
+                    provider_id: id.clone(),
+                    model_id: model_id.to_string(),
+                    name: None,
+                    capabilities: Vec::new(),
+                    context_window: None,
+                    notes: None,
+                    pinned: false,
+                    enabled: true,
+                    hidden: false,
+                    sort_order: 1.0,
+                })?;
+            }
+        }
+        Ok(id)
+    }
+
+    /// 某 Provider 首个可用（enabled 且未隐藏）模型的 UniqueModelId。
+    fn first_enabled_model_of(&self, provider_id: &str) -> Result<Option<String>, CoreError> {
+        Ok(self
+            .list_ai_models(Some(provider_id))?
+            .into_iter()
+            .find(|m| m.enabled && !m.hidden)
+            .map(|m| m.id))
+    }
+
+    /// 默认模型失效（被删/前缀是已删 Provider）时清空默认设置。
+    fn clear_default_model_if_matches(&self, unique_or_prefix: &str) -> Result<(), CoreError> {
+        if let Some(cur) = self.get_setting("ai_default_model")? {
+            let stale = cur == unique_or_prefix
+                || cur.starts_with(&format!("{unique_or_prefix}{}", crate::agent::models::MODEL_ID_SEP));
+            if stale {
+                self.set_setting("ai_default_model", "")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// ai_meta 读。
+    fn get_ai_meta(&self, key: &str) -> Result<Option<String>, CoreError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT value FROM ai_meta WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(CoreError::from(other)),
+        })
+    }
+
+    /// ai_meta 写（不 mark_dirty：本机私有，不入同步）。
+    fn set_ai_meta(&self, key: &str, value: &str) -> Result<(), CoreError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO ai_meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+}
+
+/// 预置名 → 预置键（与前端 aiPresets 键对齐；仅迁移匹配用）。
+fn preset_slug_of(name: &str) -> Option<String> {
+    let slug = name.trim().to_lowercase();
+    let known = [
+        "deepseek",
+        "qwen",
+        "kimi",
+        "moonshot",
+        "openai",
+        "groq",
+        "ollama",
+        "zhipu",
+        "gemini",
+        "mistral",
+        "anthropic",
+        "hunyuan",
+        "doubao",
+    ];
+    known.iter().find(|k| slug.contains(*k)).map(|k| k.to_string())
+}
+
+/// uuid 取前 8 位（custom Provider id 用）。
+fn short_uuid() -> String {
+    crate::model::new_id().replace('-', "")
+        .chars()
+        .take(8)
+        .collect()
+}
+
+fn row_to_ai_provider(row: &rusqlite::Row<'_>) -> rusqlite::Result<AiProvider> {
+    Ok(AiProvider {
+        id: row.get(0)?,
+        preset_id: row.get(1)?,
+        name: row.get(2)?,
+        base_url: row.get(3)?,
+        api_key: row.get(4)?,
+        enabled: row.get::<_, i64>(5)? != 0,
+        sort_order: row.get(6)?,
+        created_at: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+    })
+}
+
+fn row_to_ai_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<AiModel> {
+    let caps_raw: Option<String> = row.get(4)?;
+    let capabilities = caps_raw
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    Ok(AiModel {
+        id: row.get(0)?,
+        provider_id: row.get(1)?,
+        model_id: row.get(2)?,
+        name: row.get(3)?,
+        capabilities,
+        context_window: row.get(5)?,
+        notes: row.get(6)?,
+        pinned: row.get::<_, i64>(7)? != 0,
+        enabled: row.get::<_, i64>(8)? != 0,
+        hidden: row.get::<_, i64>(9)? != 0,
+        sort_order: row.get(10)?,
+    })
 }
 
 fn kind_to_str(k: Kind) -> &'static str {
@@ -976,6 +1486,7 @@ mod tests {
             tool_args: None,
             tool_result: None,
             images: vec![],
+            model: None,
             created_at: crate::model::now_iso(),
         }
     }
@@ -1036,4 +1547,123 @@ mod tests {
         assert!(log.list("s1").unwrap().is_empty());
         assert_eq!(log.list_sessions().unwrap().len(), 1);
     }
+    // ── AI Provider / Model（08-28-ai-model-management）──
+
+    fn sample_provider(id: &str, name: &str) -> AiProvider {
+        AiProvider {
+            id: id.to_string(),
+            preset_id: None,
+            name: name.to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            enabled: true,
+            sort_order: 1.0,
+            created_at: String::new(),
+        }
+    }
+
+    fn sample_model(provider_id: &str, model_id: &str) -> AiModel {
+        AiModel {
+            id: format!("{provider_id}::{model_id}"),
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+            name: None,
+            capabilities: vec!["vision".to_string()],
+            context_window: Some(128_000),
+            notes: None,
+            pinned: false,
+            enabled: true,
+            hidden: false,
+            sort_order: 1.0,
+        }
+    }
+
+    #[test]
+    fn ai_provider_crud_and_cascade() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.upsert_ai_provider(&sample_provider("deepseek", "DeepSeek")).unwrap();
+        assert_eq!(db.list_ai_providers().unwrap().len(), 1);
+        assert!(db.get_ai_provider("deepseek").unwrap().is_some());
+        assert!(db.find_ai_provider_by_name("DeepSeek").unwrap().is_some());
+
+        db.upsert_ai_model(&sample_model("deepseek", "deepseek-chat")).unwrap();
+        db.set_setting("ai_default_model", "deepseek::deepseek-chat").unwrap();
+
+        // 级联删模型 + 清默认。
+        db.delete_ai_provider("deepseek").unwrap();
+        assert!(db.list_ai_providers().unwrap().is_empty());
+        assert!(db.list_ai_models(None).unwrap().is_empty());
+        assert_eq!(db.get_setting("ai_default_model").unwrap(), Some(String::new()));
+    }
+
+    #[test]
+    fn ai_model_upsert_rejects_mismatched_id() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.upsert_ai_provider(&sample_provider("p1", "P1")).unwrap();
+        let mut m = sample_model("p1", "m1");
+        m.id = "p2::m1".to_string();
+        assert!(db.upsert_ai_model(&m).is_err());
+    }
+
+    #[test]
+    fn ai_sync_models_diff_and_restore() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.upsert_ai_provider(&sample_provider("p1", "P1")).unwrap();
+        db.upsert_ai_model(&sample_model("p1", "old-model")).unwrap();
+
+        // 首次同步：新增两个，old-model 仍在远端。
+        let r = db.sync_ai_models("p1", &["a".into(), "b".into(), "old-model".into()]).unwrap();
+        assert_eq!(r.added, vec!["a".to_string(), "b".to_string()]);
+        assert!(r.hidden.is_empty());
+        assert_eq!(db.list_ai_models(Some("p1")).unwrap().len(), 3);
+
+        // 远端下架 old-model → 标 hidden；再同步回来 → 恢复。
+        let r = db.sync_ai_models("p1", &["a".into(), "b".into()]).unwrap();
+        assert_eq!(r.hidden, vec!["p1::old-model".to_string()]);
+        assert!(db.get_ai_model("p1::old-model").unwrap().unwrap().hidden);
+        let r = db.sync_ai_models("p1", &["a".into(), "b".into(), "old-model".into()]).unwrap();
+        assert!(r.hidden.is_empty());
+        assert!(!db.get_ai_model("p1::old-model").unwrap().unwrap().hidden);
+    }
+
+    #[test]
+    fn ai_legacy_migration_is_idempotent() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        let legacy = r#"[{"name":"DeepSeek","base_url":"https://api.deepseek.com/v1","api_key":"sk-1","model":"deepseek-chat"}]"#;
+        db.set_setting("ai_providers", legacy).unwrap();
+        db.set_setting("ai_model", r#"{"name":"DeepSeek","base_url":"https://api.deepseek.com/v1","api_key":"sk-1","model":"deepseek-chat"}"#).unwrap();
+
+        let n = db.migrate_legacy_ai_config().unwrap();
+        assert_eq!(n, 1);
+        let providers = db.list_ai_providers().unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].name, "DeepSeek");
+        // 默认模型指向迁移来的模型。
+        assert_eq!(
+            db.get_setting("ai_default_model").unwrap().as_deref(),
+            Some("deepseek::deepseek-chat")
+        );
+
+        // 幂等：再来一次不重复导入。
+        assert_eq!(db.migrate_legacy_ai_config().unwrap(), 0);
+        assert_eq!(db.list_ai_providers().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ai_legacy_migration_active_not_in_list() {
+        let db = SqliteStorage::open_in_memory().unwrap();
+        db.set_setting("ai_providers", "[]").unwrap();
+        db.set_setting("ai_model", r#"{"name":"","base_url":"https://x.example.com/v1","api_key":"k","model":"m1"}"#).unwrap();
+
+        let n = db.migrate_legacy_ai_config().unwrap();
+        assert_eq!(n, 0); // 列表为空不算导入数，但激活配置补为独立 Provider
+        let providers = db.list_ai_providers().unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].name, "默认提供商");
+        assert_eq!(
+            db.get_setting("ai_default_model").unwrap().as_deref(),
+            Some(providers[0].id.clone() + "::m1").as_deref()
+        );
+    }
+
 }

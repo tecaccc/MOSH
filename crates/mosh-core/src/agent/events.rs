@@ -8,8 +8,14 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    /// 一轮开始（前端可据此建立流式气泡）。
-    Start { session_id: String, turn_id: String },
+    /// 一轮开始（前端可据此建立流式气泡）。`model_id` 为本轮使用的
+    /// 模型 UniqueModelId（气泡头部展示模型图标用）。
+    Start {
+        session_id: String,
+        turn_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+    },
     /// 助手文本增量（SSE 透传）。
     Delta { turn_id: String, text: String },
     /// 工具执行完成（前端渲染卡片：工具名 + 参数摘要 + 结果，失败同样发卡片）。
