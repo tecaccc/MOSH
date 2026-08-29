@@ -352,7 +352,7 @@ export async function mcpListTools(baseUrl: string, token?: string | null): Prom
 
 // —— 通知方式（系统/邮件）——
 
-/** 读通知设置回显（无设置 = 系统开、邮件关；不含授权码）。 */
+/** 读通知设置回显（无设置 = 系统开、邮件关；授权码明文回显）。 */
 export async function getNotifySettings(): Promise<NotifySettingsInfo> {
   return invoke<NotifySettingsInfo>("get_notify_settings");
 }
@@ -386,7 +386,7 @@ export async function notifySendEmail(subject: string, body: string): Promise<vo
 
 // —— 多设备同步（docs/sync-design.md）——
 
-/** 读同步配置回显（不含 secret）。 */
+/** 读同步配置回显（secret 明文回显）。 */
 export async function syncGetConfig(): Promise<SyncConfigInfo> {
   return invoke<SyncConfigInfo>("sync_get_config");
 }

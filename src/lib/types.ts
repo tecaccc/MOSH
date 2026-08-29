@@ -182,7 +182,7 @@ export interface StorageInfo {
 
 // —— 多设备同步（docs/sync-design.md）——
 
-/** 同步远端配置回显（不含 secret；`generated_key` 仅首次生成时返回一次）。 */
+/** 同步远端配置回显（secret 明文回显；`generated_key` 仅首次生成时返回一次）。 */
 export interface SyncConfigInfo {
   enabled: boolean;
   endpoint: string;
@@ -460,8 +460,8 @@ export interface EmailConfigInput {
   to: string;
 }
 
-/** SMTP 配置回显（不含授权码）。 */
-export interface EmailConfigInfo extends Omit<EmailConfigInput, "password"> {
+/** SMTP 配置回显（授权码明文回显，空串 = 未保存；小眼睛查看用）。 */
+export interface EmailConfigInfo extends EmailConfigInput {
   has_password: boolean;
 }
 

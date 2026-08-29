@@ -2,7 +2,9 @@
 //!
 //! 持久化：settings 表 key=`notify_settings`（单 JSON；随多设备同步的 settings
 //! 一起端到端加密同步）。`EmailConfig.password` 为 SMTP 授权码——仅存本地库，
-//! 回显时剔除（`EmailConfigInfo.has_password` 探针），保存空串 = 保留原值。
+//! 回显含明文（本地单机与 username 同级凭据，前端密文框 + 小眼睛查看用；
+//! 同步设置 SecretKey 修复同策略）；`has_password` 探针保留兼容，保存空串 =
+//! 保留原值。
 //!
 //! 默认行为（无此设置时）：系统通知开、邮件关——与引入本模块前只发系统通知一致。
 //!
@@ -96,7 +98,9 @@ pub struct EmailConfigInfo {
     pub username: String,
     pub from: String,
     pub to: String,
-    /// 已保存过授权码（表单留空 = 不改）。
+    /// 授权码明文回显（空串 = 未保存）；前端密文框 + 小眼睛查看用。
+    pub password: String,
+    /// 已保存过授权码（兼容探针；等价 `!password.is_empty()`）。
     pub has_password: bool,
 }
 
@@ -185,7 +189,7 @@ pub fn merge_for_save(
     Ok(merged)
 }
 
-/// 生成回显（剔除授权码）。
+/// 生成回显（含授权码明文；见模块文档回显策略）。
 pub fn info_of(settings: &NotifySettings) -> NotifySettingsInfo {
     NotifySettingsInfo {
         system: settings.system,
@@ -197,6 +201,7 @@ pub fn info_of(settings: &NotifySettings) -> NotifySettingsInfo {
             username: c.username.clone(),
             from: c.from.clone(),
             to: c.to.clone(),
+            password: c.password.clone(),
             has_password: !c.password.is_empty(),
         }),
     }
@@ -305,13 +310,18 @@ mod tests {
         assert!(merged.email.is_none());
     }
 
+    /// 回归（TODO-List BUG：邮箱授权码小眼睛无效，同 SecretKey 修复）：
+    /// 已保存的授权码必须从回显拿到真实值，前端密文框才有内容可切换明文。
     #[test]
-    fn info_strips_password() {
+    fn info_returns_saved_password() {
         let settings =
             NotifySettings { email: Some(sample()), ..Default::default() };
-        let info = serde_json::to_value(info_of(&settings)).unwrap();
-        assert!(info["email"].get("password").is_none());
-        assert_eq!(info["email"]["has_password"], true);
+        let info = info_of(&settings);
+        let email = info.email.expect("sample has email");
+        assert_eq!(email.password, "secret");
+        assert!(email.has_password);
+        // 未配置邮件 → email 为 None（前端空态）。
+        assert!(info_of(&NotifySettings::default()).email.is_none());
     }
 
     #[test]

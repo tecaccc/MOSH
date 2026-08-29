@@ -3,7 +3,8 @@
  * 通知方式开关（系统通知 / 邮件通知）+ SMTP 邮件配置表单 + 测试邮件。
  *
  * 数据流：state/notify（zustand）持回显配置并落库（后端 settings 键
- * `notify_settings`）；授权码不回显——表单留空保存/测试 = 沿用已存值。
+ * `notify_settings`）；授权码明文回显（本地单机凭据，小眼睛可查看），
+ * 留空保存/测试 = 沿用已存值。
  * 提醒轮询（state/reminder）到点按这里保存的开关分发两个通道。
  */
 
@@ -44,6 +45,7 @@ export default function NotifySettings() {
       setPort(String(e?.port ?? 587));
       setEncryption((e?.encryption as EmailEncryption) ?? "starttls");
       setUsername(e?.username ?? "");
+      setPassword(e?.password ?? "");
       setFrom(e?.from ?? "");
       setTo(e?.to ?? "");
       setFormInit(true);
@@ -73,7 +75,9 @@ export default function NotifySettings() {
         : { host, port: parsedPort, encryption, username, password, from, to };
     try {
       await save({ system: config?.system ?? true, email_enabled: config?.email_enabled ?? false, email });
-      setPassword("");
+      // 保存后 store 已拿到新回显;回填授权码,避免小眼睛再对空输入
+      // (同同步设置 SecretKey BUG 的复发点)。
+      setPassword(useNotifyStore.getState().config?.email?.password ?? "");
       toast.success("通知设置已保存");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -249,14 +253,14 @@ export default function NotifySettings() {
             <div className={styles["srow-label"]}>
               <span className={styles["srow-name"]}>密码 / 授权码</span>
               <span className={styles["srow-hint"]}>
-                {hasPassword ? "已保存；留空则保持不变" : "QQ/163 等需在邮箱设置中生成的 SMTP 授权码"}
+                {hasPassword ? "已保存；小眼睛可查看，留空保存则保持不变" : "QQ/163 等需在邮箱设置中生成的 SMTP 授权码"}
               </span>
             </div>
             <SecretInput
               inputClassName={styles["srow-input"]}
               value={password}
               onChange={(e) => setPassword(e.currentTarget.value)}
-              placeholder={hasPassword ? "••••••••••••" : "授权码"}
+              placeholder={hasPassword ? "留空保持原授权码" : "授权码"}
             />
           </div>
           <div className={styles.sdivider} />

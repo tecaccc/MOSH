@@ -65,8 +65,8 @@ export const useNotifyStore = create<NotifyState>((set, get) => ({
             port: cur.email.port,
             encryption: cur.email.encryption,
             username: cur.email.username,
-            // 授权码不回显：空串 = 保留已存值。
-            password: "",
+            // 回显现含明文授权码;透传已存值(与空串=保留语义等价,更直白)。
+            password: cur.email.password,
             from: cur.email.from,
             to: cur.email.to,
           }
